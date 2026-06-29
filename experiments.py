@@ -154,8 +154,12 @@ def load_shots_from_hf(
 ) -> list[dict]:
     """Load a random sample of DIII-D training shots from the Hugging Face Hub."""
     print(f"  Hub: {repo_id} ({config})")
+    # Each shot is ~15–20 MB once materialized. A large shuffle buffer will OOM
+    # (exit 137) because streaming shuffle holds up to buffer_size rows in RAM.
+    shuffle_buffer = min(max(n_shots * 50, 100), 500)
     ds = load_dataset(repo_id, config, split="train", streaming=True)
-    ds = ds.shuffle(seed=seed, buffer_size=10_000)
+    ds = ds.shuffle(seed=seed, buffer_size=shuffle_buffer)
+    print(f"  Streaming shuffle buffer: {shuffle_buffer} shots")
 
     shots = []
     for i, row in enumerate(ds):
