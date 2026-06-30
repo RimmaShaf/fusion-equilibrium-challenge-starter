@@ -68,7 +68,7 @@ class ExperimentConfig:
     batch_size: int = 256
     epochs: int = 50
     learning_rate: float = 1e-3
-    device: str = "auto"  # "auto", "mps", "cpu" — used by experiments_torch.py
+    device: str = "auto"  # "auto", "cuda", "mps", "cpu" — used by experiments_torch.py
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +479,47 @@ def plot_flux_comparison(Y_true: np.ndarray, Y_pred: np.ndarray,
     plt.close()
 
 
+def typical_sample_idx(Y_true: np.ndarray) -> int:
+    """A model-agnostic 'typical' frame: the one whose per-pixel contrast (std) is the
+    median across the test set. Avoids frame 0, which is often a ramp-up/atypical slice and
+    can make a model look much better or worse than it actually is on average."""
+    contrast = Y_true.reshape(len(Y_true), -1).std(axis=1)
+    return int(np.argsort(contrast)[len(contrast) // 2])
+
+
+def plot_sample_grid(Y_true: np.ndarray, Y_pred: np.ndarray, model_name: str,
+                     output_path: Path, percentiles=(0.1, 0.5, 0.9)):
+    """Actual | Predicted | Residual across this model's own error distribution (easy→hard),
+    so quality is judged over the spread instead of one cherry-picked frame."""
+    per_mse = ((Y_true - Y_pred) ** 2).reshape(len(Y_true), -1).mean(axis=1)
+    order = np.argsort(per_mse)
+    rows = [(p, int(order[min(int(p * (len(order) - 1)), len(order) - 1)])) for p in percentiles]
+
+    fig, axes = plt.subplots(len(rows), 3, figsize=(12, 3.8 * len(rows)))
+    if len(rows) == 1:
+        axes = axes[None, :]
+    for r, (p, i) in enumerate(rows):
+        true_map, pred_map = Y_true[i], Y_pred[i]
+        diff = true_map - pred_map
+        vmin, vmax = true_map.min(), true_map.max()
+        dmax = max(abs(diff.min()), abs(diff.max())) or 1e-9
+        for c, (img, cmap, lo, hi, title) in enumerate([
+            (true_map, "RdBu_r", vmin, vmax, "Actual"),
+            (pred_map, "RdBu_r", vmin, vmax, "Predicted"),
+            (diff, "RdBu_r", -dmax, dmax, "Residual (True - Pred)"),
+        ]):
+            im = axes[r, c].imshow(img, cmap=cmap, vmin=lo, vmax=hi, origin="lower")
+            axes[r, c].set_xticks([]); axes[r, c].set_yticks([])
+            if r == 0:
+                axes[r, c].set_title(title)
+            plt.colorbar(im, ax=axes[r, c], fraction=0.046)
+        axes[r, 0].set_ylabel(f"{int(p * 100)}th pct\nMSE={per_mse[i]:.4f}", fontsize=10)
+    fig.suptitle(f"{model_name} — frames across error distribution (easy → hard)", fontsize=14)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=130, bbox_inches="tight")
+    plt.close()
+
+
 def plot_model_comparison(results: dict, output_path: Path):
     """Bar chart comparing metrics across models."""
     names = list(results.keys())
@@ -582,9 +623,14 @@ def run_all_experiments(config: ExperimentConfig, skip_sklearn=False, skip_pytor
     plot_pca_explained_variance(data["target_pca"], config.output_dir / "pca_variance.png")
     print(f"  Saved: pca_variance.png")
 
+    # Use a model-agnostic "typical" test frame for all single-frame plots (not frame 0,
+    # which is often an atypical ramp-up slice). Each model also gets a sample grid.
+    rep_idx = typical_sample_idx(data["Y_test"])
+    print(f"  Representative test frame (median contrast): idx {rep_idx}")
+
     # Plot PCA reconstruction example
     plot_pca_reconstruction(
-        data["Y_test"], data["target_pca"], sample_idx=0,
+        data["Y_test"], data["target_pca"], sample_idx=rep_idx,
         output_path=config.output_dir / "pca_reconstruction.png",
     )
     print(f"  Saved: pca_reconstruction.png")
@@ -613,9 +659,13 @@ def run_all_experiments(config: ExperimentConfig, skip_sklearn=False, skip_pytor
 
             safe_name = sm.name.replace(" ", "_").replace("(", "").replace(")", "")
             plot_flux_comparison(
-                data["Y_test"], Y_pred, sample_idx=0,
-                title=f"{sm.name} - Test Sample",
+                data["Y_test"], Y_pred, sample_idx=rep_idx,
+                title=f"{sm.name} - typical test frame (idx {rep_idx})",
                 output_path=config.output_dir / f"flux_{safe_name}.png",
+            )
+            plot_sample_grid(
+                data["Y_test"], Y_pred, sm.name,
+                output_path=config.output_dir / f"grid_{safe_name}.png",
             )
             plot_residual_heatmap(
                 metrics["residual_map"], sm.name,
@@ -666,7 +716,7 @@ if __name__ == "__main__":
     parser.add_argument("--quick", action="store_true", help="Quick mode: 3 shots, 20 PCA, 10 epochs")
     parser.add_argument("--skip-sklearn", action="store_true", help="Skip sklearn models")
     parser.add_argument("--skip-pytorch", action="store_true", help="Skip PyTorch models")
-    parser.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
     args = parser.parse_args()
 
     config = ExperimentConfig(
