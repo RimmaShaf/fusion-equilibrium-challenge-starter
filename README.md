@@ -79,28 +79,6 @@ PyTorch baselines auto-detect the best device (CUDA → MPS → CPU); override w
 
 See `MODELING_GUIDE.md` for the ML walkthrough.
 
-### Streaming vs. a local copy
-
-By default every script **streams** from Hugging Face — zero disk commitment, but the data is
-re-downloaded each run and shuffling is limited to a bounded buffer. That's ideal for a first
-look or the `--quick` demo. For **real modeling** (many epochs, sweeps, full-split shuffle,
-working offline) you'll want a local copy. `download_data.py` pre-fetches into the standard HF
-cache (resume + de-dup are automatic), and `experiments.py --local` reads from it:
-
-```bash
-# See sizes before committing disk — reads metadata only, downloads nothing
-python download_data.py --list --config all
-
-python download_data.py                  # download diii_d_train (the training split)
-python experiments.py --local --n-shots 100   # train from the local copy, full-split shuffle
-```
-
-> ⚠️ **The full data is large.** `diii_d_train` is ~155 GB (7,290 shots); the two public-test
-> configs add ~12 GB and ~5 GB. `download_data.py` prints an estimate and asks for confirmation
-> before downloading — use `--config` to grab only what you need (e.g. `mast_public_test` is just
-> ~5 GB), and `streaming` remains the right default if you don't want a local copy at all. To put
-> the cache somewhere with room, set `HF_HOME` before running.
-
 ### Your own experiments → `my_experiments/`
 
 Keep your custom models, scratch scripts, cached shots, and result images in a
@@ -510,8 +488,7 @@ fusion-equilibrium-challenge-starter/
 ├── fusion_data_provider.py        # dFL data provider (reads parquet_data/)
 ├── MODELING_GUIDE.md              # ML walkthrough
 ├── example_usage.py               # Load the Hugging Face dataset
-├── download_data.py               # Pre-download configs to the local HF cache (optional)
-├── experiments.py                 # Baseline models (stream, or --local from the cache)
+├── experiments.py                 # Baseline models (train from Hugging Face)
 ├── submission_skeleton.py         # Produce a format-correct submission .npz
 ├── validate_submission.py         # Shape-check a submission before uploading (no scoring)
 ├── pyproject.toml                 # uv / pip dependency source of truth

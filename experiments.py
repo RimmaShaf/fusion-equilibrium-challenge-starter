@@ -62,7 +62,6 @@ class ExperimentConfig:
     test_size: float = 0.2
     val_size: float = 0.1
     include_thomson: bool = False
-    stream: bool = True  # False = read pre-downloaded data from the local HF cache (see download_data.py)
     random_state: int = 42
     output_dir: Path = field(default_factory=lambda: REPO_ROOT / "results")
     # PyTorch settings
@@ -152,30 +151,15 @@ def load_shots_from_hf(
     seed: int = 42,
     repo_id: str = HF_REPO_ID,
     config: str = HF_TRAIN_CONFIG,
-    stream: bool = True,
 ) -> list[dict]:
-    """Load a random sample of DIII-D training shots from the Hugging Face Hub.
-
-    stream=True (default) pulls rows on demand — no disk commitment, but re-downloaded
-    every run and limited to a bounded shuffle buffer. stream=False reads a pre-downloaded
-    local copy (see download_data.py): full-split shuffle, offline, no repeat downloads.
-    """
+    """Load a random sample of DIII-D training shots from the Hugging Face Hub."""
     print(f"  Hub: {repo_id} ({config})")
-    if stream:
-        # Each shot is ~15–20 MB once materialized. A large shuffle buffer will OOM
-        # (exit 137) because streaming shuffle holds up to buffer_size rows in RAM.
-        shuffle_buffer = min(max(n_shots * 50, 100), 500)
-        ds = load_dataset(repo_id, config, split="train", streaming=True)
-        ds = ds.shuffle(seed=seed, buffer_size=shuffle_buffer)
-        print(f"  Streaming shuffle buffer: {shuffle_buffer} shots")
-    else:
-        # Non-streaming: materializes/uses the local HF cache. First run downloads the
-        # config (run `python download_data.py` to pre-fetch); later runs are offline.
-        ds = load_dataset(repo_id, config, split="train")
-        ds = ds.shuffle(seed=seed)
-        n_take = min(n_shots, len(ds))
-        ds = ds.select(range(n_take))
-        print(f"  Local cache: {len(ds)} shots available, shuffling full split (using {n_take})")
+    # Each shot is ~15–20 MB once materialized. A large shuffle buffer will OOM
+    # (exit 137) because streaming shuffle holds up to buffer_size rows in RAM.
+    shuffle_buffer = min(max(n_shots * 50, 100), 500)
+    ds = load_dataset(repo_id, config, split="train", streaming=True)
+    ds = ds.shuffle(seed=seed, buffer_size=shuffle_buffer)
+    print(f"  Streaming shuffle buffer: {shuffle_buffer} shots")
 
     shots = []
     for i, row in enumerate(ds):
@@ -335,7 +319,6 @@ class FusionDataPipeline:
             self.config.random_state,
             self.config.hf_repo_id,
             self.config.hf_config,
-            self.config.stream,
         )
 
         print("\n=== Building Feature Matrix ===")
@@ -728,9 +711,6 @@ if __name__ == "__main__":
     parser.add_argument("--n-shots", type=int, default=10, help="Number of shots to load")
     parser.add_argument("--n-pca", type=int, default=50, help="PCA components for target compression")
     parser.add_argument("--include-thomson", action="store_true", help="Include Thomson scattering features")
-    parser.add_argument("--local", action="store_true",
-                        help="Read pre-downloaded data from the local HF cache instead of streaming "
-                             "(run download_data.py first). Faster repeat runs, full-split shuffle, offline.")
     parser.add_argument("--epochs", type=int, default=50, help="PyTorch training epochs")
     parser.add_argument("--batch-size", type=int, default=256, help="PyTorch batch size")
     parser.add_argument("--quick", action="store_true", help="Quick mode: 3 shots, 20 PCA, 10 epochs")
@@ -746,7 +726,6 @@ if __name__ == "__main__":
         epochs=args.epochs,
         batch_size=args.batch_size,
         device=args.device,
-        stream=not args.local,
     )
 
     if args.quick:
@@ -756,7 +735,6 @@ if __name__ == "__main__":
 
     print("Fusion Equilibrium Challenge - Baseline Experiments")
     print(f"  Data: {config.hf_repo_id} / {config.hf_config}")
-    print(f"  Source: {'local HF cache' if not config.stream else 'streaming'}")
     print(f"  Shots: {config.n_shots}")
     print(f"  PCA components: {config.n_pca_components}")
     print(f"  Thomson: {config.include_thomson}")
