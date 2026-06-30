@@ -10,7 +10,10 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from experiments import EFIT_GRID_SIZE, compute_metrics, plot_flux_comparison, plot_residual_heatmap, plot_training_curves
+from experiments import (
+    EFIT_GRID_SIZE, compute_metrics, plot_flux_comparison, plot_residual_heatmap,
+    plot_sample_grid, plot_training_curves, typical_sample_idx,
+)
 
 if TYPE_CHECKING:
     from experiments import ExperimentConfig
@@ -108,6 +111,8 @@ class UNetLite(nn.Module):
 
 def resolve_device(config: ExperimentConfig) -> torch.device:
     if config.device == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
         if torch.backends.mps.is_available():
             return torch.device("mps")
         return torch.device("cpu")
@@ -200,6 +205,9 @@ def run_pytorch_experiments(config: ExperimentConfig, data: dict[str, Any]) -> d
         ("UNet Lite", UNetLite(n_features)),
     ]
 
+    # Shared model-agnostic "typical" test frame (matches the sklearn path; avoids frame 0).
+    rep_idx = typical_sample_idx(data["Y_test"])
+
     results: dict[str, dict] = {}
     for name, model in pytorch_models:
         print(f"\n  [{name}]")
@@ -223,9 +231,13 @@ def run_pytorch_experiments(config: ExperimentConfig, data: dict[str, Any]) -> d
 
         safe_name = name.replace(" ", "_").replace("(", "").replace(")", "")
         plot_flux_comparison(
-            data["Y_test"], Y_pred, sample_idx=0,
-            title=f"{name} - Test Sample",
+            data["Y_test"], Y_pred, sample_idx=rep_idx,
+            title=f"{name} - typical test frame (idx {rep_idx})",
             output_path=config.output_dir / f"flux_{safe_name}.png",
+        )
+        plot_sample_grid(
+            data["Y_test"], Y_pred, name,
+            output_path=config.output_dir / f"grid_{safe_name}.png",
         )
         plot_residual_heatmap(
             metrics["residual_map"], name,

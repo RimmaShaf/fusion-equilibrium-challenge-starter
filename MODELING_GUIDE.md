@@ -146,7 +146,7 @@ Multiply each input by a learned weight, add them up, add a bias. No hidden laye
 
 **Why does this work at all?** The magnetic field is (approximately) a linear function of the currents producing it. Turn up a coil by 10%, and the field it produces goes up by roughly 10%. So a linear model is actually a decent first approximation for this physics problem.
 
-In our demo experiments (run in `--quick` mode with only 3 shots / ~264 training samples), linear regression achieved **SSIM = 0.84** (84% structural similarity) with **<0.1 seconds** training time. Results will vary with more data.
+In our demo experiments (run in `--quick` mode with only 3 shots / ~264 training samples), linear regression trains in **<0.1 seconds** and reaches **SSIM ≈ 0.4–0.85** depending on which 3 shots are drawn — the variance is huge at this sample size, so treat `--quick` numbers as a smoke test, not a benchmark. With more shots the scores stabilize and climb (Ridge/RandomForest/MLP reach SSIM ≈ 0.87–0.90 on ~100 shots).
 
 ### Ridge Regression
 
