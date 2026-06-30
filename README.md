@@ -174,10 +174,10 @@ Signal names are prefixed with the source:
 ## 🎯 The Target: What you are predicting
 
 In physics terms, you are predicting the **Magnetic Equilibrium** — the 2D poloidal flux map
-$\psi(R,Z)$, the **LCFS** plasma boundary, and **five scalar parameters**
-($\beta_N$, $l_i$, $q_{95}$, $R_\text{axis}$, $Z_\text{axis}$). The flux map below is the main
-target; the LCFS and scalars are derived equilibrium quantities scored alongside it (see
-**Output & Submission Format** for exactly what to submit and how it's scored).
+$\psi(R,Z)$ plus **five scalar parameters** ($\beta_N$, $l_i$, $q_{95}$, $R_\text{axis}$,
+$Z_\text{axis}$). The plasma boundary (**LCFS**) is also scored, but you don't submit it
+separately — the scorer extracts it from your flux map. See **Output & Submission Format** for
+exactly what to submit and how it's scored.
 
 ### `efit/` (The Ground Truth)
 
@@ -198,34 +198,34 @@ Reconstructions often include electrical currents present in major conductors su
 
 ## 📤 Output & Submission Format
 
-You predict **three targets** for every shot, at each provided `efit_times` timestamp — the same
-quantities a conventional EFIT reports:
+You submit **two things** for every shot, at each provided `efit_times` timestamp:
 
 1. **Flux map** `efit_psirz` — the 2D poloidal flux ψ(R,Z) in the machine's native grid.
-2. **LCFS contour** — the last closed flux surface (the plasma boundary), as ordered (R,Z) points.
-3. **Five scalars** — `[betaN, li, q95, R_axis, Z_axis]`: normalized beta, internal inductance,
-   edge safety factor q₉₅, and the magnetic-axis (R, Z).
+2. **Five scalars** — `betaN, li, q95, R_axis, Z_axis`: normalized beta, internal inductance,
+   edge safety factor q₉₅, and the magnetic-axis coordinates (in **meters**).
 
-**Per-shot arrays** (variable `T` = number of `efit_times`; grouped per shot in one `.npz` per
-config):
+You do **not** submit the LCFS contour. The scorer extracts the boundary from the flux map (a
+contour of ψ at the boundary value) for *both* your prediction and the ground truth, so getting ψ
+right is what drives the `D_LCFS` term — there's nothing extra to upload.
 
-
-| Key suffix       | Shape            | Target  | Notes                                                          |
-| ---------------- | ---------------- | ------- | -------------------------------------------------------------- |
-| `_psirz`         | `(T, H, W)` float | flux map | DIII-D `H,W = 65,65`; MAST `65,129` (central ~50% NaN allowed) |
-| `_lcfs`          | `(T, N, 2)` float | LCFS    | `N` ordered (R,Z) boundary points (meters); `N` is your choice |
-| `_scalars`       | `(T, 5)` float    | scalars | column order `[betaN, li, q95, R_axis, Z_axis]`                |
+**Per-shot keys** (variable `T` = number of `efit_times`; grouped per shot in one `.npz` per
+config). Each scalar is its own named key — no positional column order to get wrong:
 
 
-So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_lcfs`, `shot_0000_scalars`,
-`shot_0001_psirz`, … in test-stream order. The skeleton writes a `manifest.json` alongside (per
-the rules, declaring which harmonization layer you used).
+| Key suffix                                  | Shape             | Notes                                                          |
+| ------------------------------------------- | ----------------- | -------------------------------------------------------------- |
+| `_psirz`                                    | `(T, H, W)` float | DIII-D `H,W = 65,65`; MAST `65,129` (central ~50% NaN allowed) |
+| `_betaN` `_li` `_q95` `_R_axis` `_Z_axis`   | `(T,)` float each | one scalar per key; `R_axis`/`Z_axis` in meters               |
+
+
+So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_betaN`, `shot_0000_li`,
+`shot_0000_q95`, `shot_0000_R_axis`, `shot_0000_Z_axis`, `shot_0001_psirz`, … in test-stream
+order. The skeleton writes a `manifest.json` alongside (per the rules, declaring which
+harmonization layer you used).
 
 - **Align to** `efit_times` — one prediction per target timestamp. Resample your *inputs* to these
 times; never resample/interpolate the target grid itself.
 - **Preserve shot order** — emit predictions in the same order the test split streams rows.
-- **LCFS `N` is up to you** — the Hausdorff distance is insensitive to point count, so resample
-your contour to whatever density you like (the skeleton uses 128).
 
 **NaN handling (MAST flux map).** The MAST `_psirz` ground truth is NaN in the central-column
 hardware region. **You don't need to predict those pixels** — the scorer's R²_ψ runs only over
@@ -243,7 +243,7 @@ S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)      
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `R²_ψ`       | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
 | `R²_scalars` | Mean of the per-scalar R² across `betaN, li, q95, R_axis, Z_axis`. Clipped to ≥ 0.            |
-| `D_LCFS`     | Symmetric Hausdorff distance between predicted/true LCFS, normalized by mean true LCFS R. Clipped to ≤ 1. |
+| `D_LCFS`     | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
 
 **Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
@@ -258,9 +258,9 @@ python validate_submission.py submission/diii_d_public_test.npz --config diii_d_
 python validate_submission.py submission/mast_public_test.npz  --config mast_public_test
 ```
 
-It confirms the three per-shot keys, shot order/count, per-shot `T`, native grid, the 5-scalar
-width, and the `(T, N, 2)` LCFS layout against the streamed public-test inputs — the errors that
-otherwise only surface after you submit.
+It confirms the per-shot keys (`_psirz` + the five scalar keys), shot order/count, per-shot `T`,
+native grid, and dtypes against the streamed public-test inputs — the errors that otherwise only
+surface after you submit.
 
 ## 📮 How to Submit
 

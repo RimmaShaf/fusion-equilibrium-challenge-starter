@@ -6,13 +6,13 @@ Checks that a submission .npz has the right STRUCTURE before you upload it to Co
 NOT score (the scorer is held by the organizers and runs on the platform). Catching a malformed
 file here saves you a wasted submission slot.
 
-A submission predicts THREE targets per shot, grouped per shot (see README → "Output & Submission
-Format"). For a config this streams the public-test inputs from Hugging Face (no ground truth
-needed) and verifies, for every shot in stream order, with T = number of `efit_times`:
-  - `shot_XXXX_psirz`   present, shape `(T, H, W)` in the machine's native grid (DIII-D 65×65,
+A submission predicts the flux map plus five scalars per shot, grouped per shot (see README →
+"Output & Submission Format"). The LCFS is NOT submitted — the scorer derives it from the flux
+map. For a config this streams the public-test inputs from Hugging Face (no ground truth needed)
+and verifies, for every shot in stream order, with T = number of `efit_times`:
+  - `shot_XXXX_psirz`  present, shape `(T, H, W)` in the machine's native grid (DIII-D 65×65,
     MAST 65×129), floating dtype, and (DIII-D only) no NaN/Inf since its ground truth is finite,
-  - `shot_XXXX_scalars` present, shape `(T, 5)` for [betaN, li, q95, R_axis, Z_axis], floating,
-  - `shot_XXXX_lcfs`    present, shape `(T, N, 2)` (N ordered (R,Z) boundary points), floating.
+  - `shot_XXXX_<scalar>` present for each of betaN, li, q95, R_axis, Z_axis, shape `(T,)`, floating.
 
 Usage:
     python validate_submission.py submission/diii_d_public_test.npz --config diii_d_public_test
@@ -30,7 +30,7 @@ import numpy as np
 REPO_ID = "Sophelio/fusion-equilibrium-challenge"
 # Native flux grid per machine (rows = Z, cols = R).
 GRID = {"DIII-D": (65, 65), "MAST": (65, 129)}
-N_SCALARS = 5  # [betaN, li, q95, R_axis, Z_axis]
+SCALARS = ["betaN", "li", "q95", "R_axis", "Z_axis"]  # one (T,) key per scalar
 # config -> (split, machine). One public-test config = one machine.
 CONFIG_INFO = {
     "diii_d_public_test": ("public_test", "DIII-D"),
@@ -78,30 +78,20 @@ def validate(npz_path: Path, config: str, max_shots: int) -> int:
             if machine == "DIII-D" and not np.isfinite(arr).all():
                 errors.append(f"{k}: contains NaN/Inf (DIII-D is fully finite; those pixels score as error)")
 
-        # scalars: (T, 5)
-        k = f"{prefix}_scalars"
-        if k not in sub:
-            errors.append(f"{k}: MISSING (expected ({T}, {N_SCALARS}) [betaN, li, q95, R_axis, Z_axis])")
-        else:
+        # scalars: one (T,) array per scalar, named to prevent column mix-ups
+        for name in SCALARS:
+            k = f"{prefix}_{name}"
+            if k not in sub:
+                errors.append(f"{k}: MISSING (expected ({T},))")
+                continue
             arr = sub[k]
-            if arr.shape != (T, N_SCALARS):
-                errors.append(f"{k}: shape {arr.shape}, expected ({T}, {N_SCALARS})")
-            if not np.issubdtype(arr.dtype, np.floating):
-                errors.append(f"{k}: dtype {arr.dtype}, expected float")
-
-        # LCFS contour: (T, N, 2), N is the participant's choice (Hausdorff is N-agnostic)
-        k = f"{prefix}_lcfs"
-        if k not in sub:
-            errors.append(f"{k}: MISSING (expected (T, N, 2) ordered (R,Z) boundary points)")
-        else:
-            arr = sub[k]
-            if not (arr.ndim == 3 and arr.shape[0] == T and arr.shape[2] == 2 and arr.shape[1] >= 3):
-                errors.append(f"{k}: shape {arr.shape}, expected ({T}, N, 2) with N≥3")
+            if arr.shape != (T,):
+                errors.append(f"{k}: shape {arr.shape}, expected ({T},)")
             if not np.issubdtype(arr.dtype, np.floating):
                 errors.append(f"{k}: dtype {arr.dtype}, expected float")
 
     if not capped:
-        expected_keys = {f"shot_{i:04d}_{s}" for i in range(n) for s in ("psirz", "scalars", "lcfs")}
+        expected_keys = {f"shot_{i:04d}_{s}" for i in range(n) for s in ("psirz", *SCALARS)}
         extra = [k for k in sub if k not in expected_keys]
         if extra:
             errors.append(f"unexpected keys not in stream order: {extra[:5]}{' …' if len(extra) > 5 else ''}")

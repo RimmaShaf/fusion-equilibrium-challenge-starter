@@ -6,14 +6,16 @@ This is the executable version of README → "Output & Submission Format". Run i
 printed shapes to see exactly what a submission looks like — no Git LFS / sample data needed
 (it streams the public test inputs from Hugging Face).
 
-What it does:
-  - For each test config, streams the input-only shots, and for every shot produces predictions
-    of the THREE targets at the shot's `efit_times`, grouped per shot in one .npz per config:
-        shot_0000_psirz   (T, H, W)   flux map   DIII-D 65x65 / MAST 65x129 (central NaN allowed)
-        shot_0000_lcfs    (T, N, 2)   LCFS contour — N ordered (R,Z) boundary points (meters)
-        shot_0000_scalars (T, 5)      [betaN, li, q95, R_axis, Z_axis]
-  - Writes one `<config>.npz` per config plus a `manifest.json` declaring the harmonization layer
-    (required by the rules; fill in your own H identifier).
+What you submit (per shot, at each `efit_times` timestamp), grouped per shot in one .npz per config:
+    shot_0000_psirz    (T, H, W)   flux map   DIII-D 65x65 / MAST 65x129 (central NaN allowed)
+    shot_0000_betaN    (T,)        normalized beta
+    shot_0000_li       (T,)        internal inductance
+    shot_0000_q95      (T,)        edge safety factor
+    shot_0000_R_axis   (T,)        magnetic-axis R (meters)
+    shot_0000_Z_axis   (T,)        magnetic-axis Z (meters)
+
+You do NOT submit the LCFS contour: the scorer extracts both the true and the predicted LCFS
+from the flux maps (a contour of psi at the boundary), so a good psi is what drives D_LCFS.
 
 The leaderboard score is the composite  S = 0.6*R2_psi + 0.25*R2_scalars + 0.15*(1 - D_LCFS).
 To make a real submission, replace `your_model_predict()` with your trained model. The placeholder
@@ -35,17 +37,15 @@ TEST_CONFIGS = [("diii_d_public_test", "public_test"), ("mast_public_test", "pub
 # Native flux grid per machine (rows=Z, cols=R). MAST's inner ~64 columns are NaN in the ground
 # truth (central-column hardware); the scorer's R2_psi ignores non-finite GT pixels.
 GRID = {"DIII-D": (65, 65), "MAST": (65, 129)}
-# Scalar column order — MUST match this for R2_scalars to line up.
+# Each scalar is submitted under its own per-shot key (named, not positional, to make column
+# mix-ups impossible). R_axis / Z_axis are in meters.
 SCALARS = ["betaN", "li", "q95", "R_axis", "Z_axis"]
-# LCFS contour density used by this skeleton. Your choice — Hausdorff is point-count agnostic.
-LCFS_N_POINTS = 128
 
 
 def your_model_predict(row: dict, source: str) -> dict:
     """REPLACE ME. Return predictions for this shot, aligned to row['efit_times'], as a dict:
-        {"psirz":   (T, H, W) flux map,
-         "lcfs":    (T, N, 2) ordered (R,Z) LCFS boundary points in meters,
-         "scalars": (T, 5)    [betaN, li, q95, R_axis, Z_axis]}
+        {"psirz":  (T, H, W) flux map,
+         "betaN":  (T,), "li": (T,), "q95": (T,), "R_axis": (T,), "Z_axis": (T,)}
 
     Inputs in `row` (NO magnetic-diagnostic array — that's the point of the challenge):
       - `magnetics_*` COIL CURRENTS = commanded actuators (F-coils, ECOILA/bcoil, MAST P-coils,
@@ -57,11 +57,10 @@ def your_model_predict(row: dict, source: str) -> dict:
     "What 'blind' really means"."""
     T = len(np.asarray(row["efit_times"]))
     H, W = GRID[source]
-    return {
-        "psirz": np.zeros((T, H, W), dtype=np.float32),                # placeholder baseline
-        "lcfs": np.zeros((T, LCFS_N_POINTS, 2), dtype=np.float32),     # placeholder boundary
-        "scalars": np.zeros((T, len(SCALARS)), dtype=np.float32),      # placeholder scalars
-    }
+    out = {"psirz": np.zeros((T, H, W), dtype=np.float32)}      # placeholder baseline
+    for name in SCALARS:
+        out[name] = np.zeros(T, dtype=np.float32)               # placeholder scalars
+    return out
 
 
 def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> Path:
@@ -77,23 +76,21 @@ def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> 
         out = your_model_predict(row, source)
 
         assert out["psirz"].shape == (T, H, W), f"{config} shot {i}: psirz {out['psirz'].shape} != {(T, H, W)}"
-        assert out["scalars"].shape == (T, len(SCALARS)), f"{config} shot {i}: scalars {out['scalars'].shape} != {(T, len(SCALARS))}"
-        assert out["lcfs"].ndim == 3 and out["lcfs"].shape[0] == T and out["lcfs"].shape[2] == 2, \
-            f"{config} shot {i}: lcfs {out['lcfs'].shape} != (T, N, 2)"
-
         preds[f"shot_{i:04d}_psirz"] = out["psirz"].astype(np.float32)
-        preds[f"shot_{i:04d}_lcfs"] = out["lcfs"].astype(np.float32)
-        preds[f"shot_{i:04d}_scalars"] = out["scalars"].astype(np.float32)
+        for name in SCALARS:
+            arr = np.asarray(out[name])
+            assert arr.shape == (T,), f"{config} shot {i}: {name} {arr.shape} != ({T},)"
+            preds[f"shot_{i:04d}_{name}"] = arr.astype(np.float32)
+
         n = i + 1
         if n % 25 == 0:
             print(f"  {config}: {n} shots")
 
     out_path = out_dir / f"{config}.npz"
     np.savez_compressed(out_path, **preds)
-    print(f"  {config}: {n} shots -> {out_path.name}  "
-          f"(e.g. shot_0000_psirz {preds.get('shot_0000_psirz', np.empty(0)).shape}, "
-          f"_lcfs {preds.get('shot_0000_lcfs', np.empty(0)).shape}, "
-          f"_scalars {preds.get('shot_0000_scalars', np.empty(0)).shape})")
+    psh = preds.get("shot_0000_psirz", np.empty(0)).shape
+    print(f"  {config}: {n} shots -> {out_path.name}  (e.g. shot_0000_psirz {psh}, "
+          f"shot_0000_betaN {preds.get('shot_0000_betaN', np.empty(0)).shape})")
     return out_path
 
 
@@ -114,13 +111,14 @@ def main() -> None:
     # Manifest declaring the harmonization layer (required by the rules).
     manifest = {
         "harmonization_layer": args.harmonization,
-        "scalar_order": SCALARS,
+        "scalars": SCALARS,
         "configs": written,
     }
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     print(f"\nWrote {', '.join(written)} + manifest.json to {args.out.resolve()}")
-    print("Each .npz: per shot, keys shot_XXXX_psirz (T,H,W), _lcfs (T,N,2), _scalars (T,5).")
+    print("Each .npz: per shot, key shot_XXXX_psirz (T,H,W) + one (T,) key per scalar "
+          f"({', '.join(SCALARS)}).")
     print("Next: python validate_submission.py <config>.npz --config <config>")
 
 
