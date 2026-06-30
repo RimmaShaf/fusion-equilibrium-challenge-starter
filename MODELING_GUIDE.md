@@ -274,7 +274,7 @@ S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)      
 |------|------------------|------|
 | **R²_ψ** | Global R² of the flux map over all (R,Z) points × timesteps × shots (clipped ≥ 0) | → 1 |
 | **R²_scalars** | Mean per-scalar R² across `betaN, li, q95, R_axis, Z_axis` (clipped ≥ 0) | → 1 |
-| **D_LCFS** | Symmetric Hausdorff distance between predicted/true LCFS, normalized by mean true LCFS major radius (clipped ≤ 1) | → 0 |
+| **D_LCFS** | Symmetric Hausdorff distance between the LCFS contours extracted from your ψ and the true ψ, normalized by mean true LCFS major radius (clipped ≤ 1). You don't submit a contour — predict a good ψ. | → 0 |
 
 Cross-machine transfer (Award #2) is `G_ratio = S_model(MAST) / S_model(DIII-D)` among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. **R² can be negative** before
