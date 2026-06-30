@@ -173,8 +173,11 @@ Signal names are prefixed with the source:
 
 ## 🎯 The Target: What you are predicting
 
-In physics terms, you are predicting the **Magnetic Equilibrium** ($\psi$).
-In Data Science terms, this might be looked at as a type of **Image Regression** problem.
+In physics terms, you are predicting the **Magnetic Equilibrium** — the 2D poloidal flux map
+$\psi(R,Z)$, the **LCFS** plasma boundary, and **five scalar parameters**
+($\beta_N$, $l_i$, $q_{95}$, $R_\text{axis}$, $Z_\text{axis}$). The flux map below is the main
+target; the LCFS and scalars are derived equilibrium quantities scored alongside it (see
+**Output & Submission Format** for exactly what to submit and how it's scored).
 
 ### `efit/` (The Ground Truth)
 
@@ -195,41 +198,59 @@ Reconstructions often include electrical currents present in major conductors su
 
 ## 📤 Output & Submission Format
 
-> **Status: proposed draft.** Scoring is still being finalized. The rules below are the
-> maintainers' recommended convention — they're what the starter code and
-> `submission_skeleton.py` assume. Treat them as the default unless the official
-> competition page says otherwise.
+You predict **three targets** for every shot, at each provided `efit_times` timestamp — the same
+quantities a conventional EFIT reports:
 
-**What you submit.** For every shot in a test config (`diii_d_public_test`,
-`mast_public_test`), predict the flux map `efit_psirz` at each provided `efit_times`
-timestamp, in the **machine's native grid**:
+1. **Flux map** `efit_psirz` — the 2D poloidal flux ψ(R,Z) in the machine's native grid.
+2. **LCFS contour** — the last closed flux surface (the plasma boundary), as ordered (R,Z) points.
+3. **Five scalars** — `[betaN, li, q95, R_axis, Z_axis]`: normalized beta, internal inductance,
+   edge safety factor q₉₅, and the magnetic-axis (R, Z).
 
-
-| Machine | Predicted array per shot | Notes                                                  |
-| ------- | ------------------------ | ------------------------------------------------------ |
-| DIII-D  | `(T, 65, 65)` float      | full grid, all pixels valid                            |
-| MAST    | `(T, 65, 129)` float     | central-column block (~50%) is NaN in the ground truth |
+**Per-shot arrays** (variable `T` = number of `efit_times`; grouped per shot in one `.npz` per
+config):
 
 
-- **Align to** `efit_times` — one 65×65 (or 65×129) map per target timestamp. Resample your
-*inputs* to these times; never resample/interpolate the target grid itself.
+| Key suffix       | Shape            | Target  | Notes                                                          |
+| ---------------- | ---------------- | ------- | -------------------------------------------------------------- |
+| `_psirz`         | `(T, H, W)` float | flux map | DIII-D `H,W = 65,65`; MAST `65,129` (central ~50% NaN allowed) |
+| `_lcfs`          | `(T, N, 2)` float | LCFS    | `N` ordered (R,Z) boundary points (meters); `N` is your choice |
+| `_scalars`       | `(T, 5)` float    | scalars | column order `[betaN, li, q95, R_axis, Z_axis]`                |
+
+
+So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_lcfs`, `shot_0000_scalars`,
+`shot_0001_psirz`, … in test-stream order. The skeleton writes a `manifest.json` alongside (per
+the rules, declaring which harmonization layer you used).
+
+- **Align to** `efit_times` — one prediction per target timestamp. Resample your *inputs* to these
+times; never resample/interpolate the target grid itself.
 - **Preserve shot order** — emit predictions in the same order the test split streams rows.
-- **One array per shot** (variable `T`); the skeleton stores them as `shot_0000`, `shot_0001`, …
-in an `.npz`.
+- **LCFS `N` is up to you** — the Hausdorff distance is insensitive to point count, so resample
+your contour to whatever density you like (the skeleton uses 128).
 
-**NaN handling (MAST).** The MAST ground truth is NaN in the central-column hardware region
-where no equilibrium exists. **You don't need to predict those pixels** — leave them NaN (or any
-value). The proposed scorer compares **only where the ground truth is finite**, so values in the
-NaN region are ignored. (DIII-D has no NaN region.)
+**NaN handling (MAST flux map).** The MAST `_psirz` ground truth is NaN in the central-column
+hardware region. **You don't need to predict those pixels** — the scorer's R²_ψ runs only over
+finite ground-truth points. (DIII-D has no NaN region.)
 
-**How you're scored (proposed).** Per frame, over finite ground-truth pixels:
-**SSIM** (primary — it rewards getting the *shape* right) plus **MSE / MAE / R²** (secondary).
-Scores are averaged **per frame, then per shot, then per machine** so long shots don't dominate,
-and DIII-D / MAST are reported separately (their flux ranges differ by ~10×). See
-`MODELING_GUIDE.md → Evaluation Metrics`. The scorer itself runs **on the submission platform
-against held-out ground truth** — it is not part of this starter kit.
+### How you're scored
 
-**Validate your file before uploading (`validate_submission.py`).** This checks the *shape* of
+The leaderboard score is the **composite intra-machine score** (Award #1):
+
+```
+S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)        (clipped to [0, 1])
+```
+
+| Term         | What it measures                                                                              |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `R²_ψ`       | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
+| `R²_scalars` | Mean of the per-scalar R² across `betaN, li, q95, R_axis, Z_axis`. Clipped to ≥ 0.            |
+| `D_LCFS`     | Symmetric Hausdorff distance between predicted/true LCFS, normalized by mean true LCFS R. Clipped to ≤ 1. |
+
+**Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
+`R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
+against held-out ground truth** — it is not part of this starter kit. See `MODELING_GUIDE.md →
+Evaluation Metrics`.
+
+**Validate your file before uploading (`validate_submission.py`).** This checks the *structure* of
 your submission (no ground truth, no score) so a malformed `.npz` doesn't burn a submission slot:
 
 ```bash
@@ -237,8 +258,9 @@ python validate_submission.py submission/diii_d_public_test.npz --config diii_d_
 python validate_submission.py submission/mast_public_test.npz  --config mast_public_test
 ```
 
-It confirms keys, shot order/count, per-shot `T`, native grid, and dtype against the streamed
-public-test inputs — the errors that otherwise only surface after you submit.
+It confirms the three per-shot keys, shot order/count, per-shot `T`, native grid, the 5-scalar
+width, and the `(T, N, 2)` LCFS layout against the streamed public-test inputs — the errors that
+otherwise only surface after you submit.
 
 ## 📮 How to Submit
 

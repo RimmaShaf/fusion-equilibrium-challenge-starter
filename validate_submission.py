@@ -2,17 +2,17 @@
 """
 Submission validator for the Fusion Equilibrium Challenge.
 
-Checks that a submission .npz has the right SHAPE before you upload it to Codabench — it does
+Checks that a submission .npz has the right STRUCTURE before you upload it to Codabench — it does
 NOT score (the scorer is held by the organizers and runs on the platform). Catching a malformed
 file here saves you a wasted submission slot.
 
-For a config it streams the public-test inputs from Hugging Face (no ground truth needed) and
-verifies, for every shot in stream order:
-  - the key `shot_0000`, `shot_0001`, … is present,
-  - the array is `(T, H, W)` with T = number of `efit_times` and the machine's native grid
-    (DIII-D 65×65, MAST 65×129),
-  - the dtype is floating point,
-  - (DIII-D) no NaN/Inf, since the DIII-D ground truth is fully finite.
+A submission predicts THREE targets per shot, grouped per shot (see README → "Output & Submission
+Format"). For a config this streams the public-test inputs from Hugging Face (no ground truth
+needed) and verifies, for every shot in stream order, with T = number of `efit_times`:
+  - `shot_XXXX_psirz`   present, shape `(T, H, W)` in the machine's native grid (DIII-D 65×65,
+    MAST 65×129), floating dtype, and (DIII-D only) no NaN/Inf since its ground truth is finite,
+  - `shot_XXXX_scalars` present, shape `(T, 5)` for [betaN, li, q95, R_axis, Z_axis], floating,
+  - `shot_XXXX_lcfs`    present, shape `(T, N, 2)` (N ordered (R,Z) boundary points), floating.
 
 Usage:
     python validate_submission.py submission/diii_d_public_test.npz --config diii_d_public_test
@@ -28,8 +28,9 @@ from pathlib import Path
 import numpy as np
 
 REPO_ID = "Sophelio/fusion-equilibrium-challenge"
-# Native target grid per machine (rows = Z, cols = R).
+# Native flux grid per machine (rows = Z, cols = R).
 GRID = {"DIII-D": (65, 65), "MAST": (65, 129)}
+N_SCALARS = 5  # [betaN, li, q95, R_axis, Z_axis]
 # config -> (split, machine). One public-test config = one machine.
 CONFIG_INFO = {
     "diii_d_public_test": ("public_test", "DIII-D"),
@@ -61,21 +62,46 @@ def validate(npz_path: Path, config: str, max_shots: int) -> int:
             print(f"  (stopped at --max-shots {max_shots}; full validation needs --max-shots 0)")
             break
         n += 1
-        key = f"shot_{i:04d}"
+        prefix = f"shot_{i:04d}"
         T = len(np.asarray(row["efit_times"]))
-        if key not in sub:
-            errors.append(f"{key}: MISSING (expected shape ({T}, {H}, {W}))")
-            continue
-        arr = sub[key]
-        if arr.shape != (T, H, W):
-            errors.append(f"{key}: shape {arr.shape}, expected ({T}, {H}, {W})")
-        if not np.issubdtype(arr.dtype, np.floating):
-            errors.append(f"{key}: dtype {arr.dtype}, expected float")
-        if machine == "DIII-D" and not np.isfinite(arr).all():
-            errors.append(f"{key}: contains NaN/Inf (DIII-D is fully finite; those pixels score as error)")
+
+        # flux map: (T, H, W)
+        k = f"{prefix}_psirz"
+        if k not in sub:
+            errors.append(f"{k}: MISSING (expected ({T}, {H}, {W}))")
+        else:
+            arr = sub[k]
+            if arr.shape != (T, H, W):
+                errors.append(f"{k}: shape {arr.shape}, expected ({T}, {H}, {W})")
+            if not np.issubdtype(arr.dtype, np.floating):
+                errors.append(f"{k}: dtype {arr.dtype}, expected float")
+            if machine == "DIII-D" and not np.isfinite(arr).all():
+                errors.append(f"{k}: contains NaN/Inf (DIII-D is fully finite; those pixels score as error)")
+
+        # scalars: (T, 5)
+        k = f"{prefix}_scalars"
+        if k not in sub:
+            errors.append(f"{k}: MISSING (expected ({T}, {N_SCALARS}) [betaN, li, q95, R_axis, Z_axis])")
+        else:
+            arr = sub[k]
+            if arr.shape != (T, N_SCALARS):
+                errors.append(f"{k}: shape {arr.shape}, expected ({T}, {N_SCALARS})")
+            if not np.issubdtype(arr.dtype, np.floating):
+                errors.append(f"{k}: dtype {arr.dtype}, expected float")
+
+        # LCFS contour: (T, N, 2), N is the participant's choice (Hausdorff is N-agnostic)
+        k = f"{prefix}_lcfs"
+        if k not in sub:
+            errors.append(f"{k}: MISSING (expected (T, N, 2) ordered (R,Z) boundary points)")
+        else:
+            arr = sub[k]
+            if not (arr.ndim == 3 and arr.shape[0] == T and arr.shape[2] == 2 and arr.shape[1] >= 3):
+                errors.append(f"{k}: shape {arr.shape}, expected ({T}, N, 2) with N≥3")
+            if not np.issubdtype(arr.dtype, np.floating):
+                errors.append(f"{k}: dtype {arr.dtype}, expected float")
 
     if not capped:
-        expected_keys = {f"shot_{i:04d}" for i in range(n)}
+        expected_keys = {f"shot_{i:04d}_{s}" for i in range(n) for s in ("psirz", "scalars", "lcfs")}
         extra = [k for k in sub if k not in expected_keys]
         if extra:
             errors.append(f"unexpected keys not in stream order: {extra[:5]}{' …' if len(extra) > 5 else ''}")
