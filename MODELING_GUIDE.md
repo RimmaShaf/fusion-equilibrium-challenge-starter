@@ -311,6 +311,10 @@ Cross-machine transfer (Award #2) is `G_ratio = S_model(MAST) / S_model(DIII-D)`
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. **R² can be negative** before
 clipping — that means the model is worse than predicting the mean, and it scores 0 in the composite.
 
+**`dsep` is scored separately as `R²_dsep`** — the R² of your predicted x-point gap over frames
+where the true `dsep` is finite (NaN / `−1.0` sentinel frames excluded). It is reported alongside
+the composite but does **not** enter `S_model`; you still submit a `dsep` prediction per shot.
+
 **Diagnostic metrics (not the score).** The baselines in `experiments.py` also print **MSE / MAE /
 SSIM** on the flux map. These are quick intuition proxies — SSIM in particular tells you whether the
 overall *shape* is right rather than per-pixel values — but the leaderboard ranks on `S_model`, so

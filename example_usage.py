@@ -12,7 +12,7 @@ all withheld on the test splits.
 
 Tip: if you have the dataset downloaded locally (same layout as the Hub repo,
 `<root>/data/<config>/*.parquet`), you can read it without the Hub via pandas, e.g.
-`pandas.read_parquet(".../data/diii_d_train/d3d_shot_182344.parquet").iloc[0]`.
+`pandas.read_parquet(".../data/diii_d_train/d3d_shot_203702.parquet").iloc[0]`.
 See `experiments.py --source local` for a full offline pipeline.
 """
 
