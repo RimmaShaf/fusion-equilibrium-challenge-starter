@@ -1,9 +1,10 @@
 # ⚛️ The Fusion Equilibrium Challenge: A Hacker's Guide
 
-Mathew Waller1, Craig Michoski1, Tapan Ganatma Nakkina1, Brian Sammuli2, William Boyes2, Mitchell Clark2, Sterling Smith2, Raffi Nazikian2
+Matthew Waller1, Craig Michoski1, Tapan Ganatma Nakkina1, Brian Sammuli2, William Boyes2, Mitchell Clark2, Sterling Smith2, Raffi Nazikian2
 
-1) Sophelio  
-2) General Atomics
+1. Sophelio  
+2. General Atomics
+3. UT Austin
 
 ## Getting Started
 
@@ -18,6 +19,8 @@ This repository is the **public starter kit** for the Fusion Equilibrium Challen
 > `efit_q95`, `efit_r_axis`, `efit_z_axis` — plus the EFIT-derived x-point gap
 > `magnetics_dsep`. All of these are present in `diii_d_train` and **withheld on the test
 > splits**. `experiments.py` predicts and scores the scalars alongside the flux map.
+
+
 
 ### Get the demo shots (Git LFS)
 
@@ -94,7 +97,7 @@ See `MODELING_GUIDE.md` for the ML walkthrough.
 ### Your own experiments → `my_experiments/`
 
 Keep your custom models, scratch scripts, cached shots, and result images in a
-**`my_experiments/`** folder at the repo root. It's listed in `.gitignore`, so your work
+`my_experiments/` folder at the repo root. It's listed in `.gitignore`, so your work
 stays local and never collides with the starter kit when you `git pull` updates. The starter
 modules are importable from there:
 
@@ -106,21 +109,29 @@ from experiments import load_shot_from_hf_row, interpolate_magnetics_to_efit  # 
 
 ---
 
+
+
 ## Welcome to the Machine
+
 You are about to work with data from two large nuclear fusion research devices:
+
 - **DIII-D** - General Atomics tokamak (San Diego, USA)
 - **MAST** - Mega Ampere Spherical Tokamak (Culham, UK)
 
 Your goal is to solve a control theory problem that is critical for the future of clean energy: **Predicting the shape of the plasma.**
 
 ### The "Jelly Donut" Analogy (Fusion 101)
+
 Imagine you have a donut made of super-hot, invisible jelly (the plasma). This jelly is 100 million degrees, so you can't touch it. Instead, you hold it in place using powerful, invisible magnetic fields (the "magnetic bottle").
 
 Usually, we use magnetic sensors to "feel" where the jelly is. **But in this challenge, you are blind.** The magnetic sensors are broken or unavailable.
 
 **Your Mission:** You must infer the exact shape of the jelly in the donut using only:
-1.  **The Knobs:** How much current you are sending to the electromagnets.
-2.  **The Thermometer:** Lasers that measure how hot and dense the jelly is at specific points.
+
+1. **The Knobs:** How much current you are sending to the electromagnets.
+2. **The Thermometer:** Lasers that measure how hot and dense the jelly is at specific points.
+
+
 
 ### What "blind" really means — and why it matters
 
@@ -129,9 +140,9 @@ diagnostics**: an array of magnetic field probes and flux loops mounted around t
 that "feel" the plasma's own field. **This challenge withholds that diagnostic array.** Your
 inputs are only:
 
-- **Actuators** — the *commanded* coil currents (`magnetics_F*`, `ECOILA`/`bcoil`, MAST P-coils,
-  `Solenoid`, `TF`, …). These are knobs you *drive*, not measurements of the plasma's field.
-- **Kinetic profiles** — Thomson scattering electron temperature & density (`thomson_*`).
+- **Actuators** — the *commanded* coil currents (`magnetics_F`*, `ECOILA`/`bcoil`, MAST P-coils,
+`Solenoid`, `TF`, …). These are knobs you *drive*, not measurements of the plasma's field.
+- **Kinetic profiles** — Thomson scattering electron temperature & density (`thomson_`*).
 
 The motivation is concrete and physical: if a model can reconstruct the equilibrium **without a
 magnetic-diagnostic suite**, a tokamak could be built and operated more cheaply without that
@@ -140,9 +151,9 @@ zero-shot* goal: equilibrium reconstruction from actuators + kinetic profiles al
 **MAST track** pushes it one step further — can the learned physics reconstruct a machine the
 model has **never seen** (different size, shape, and coil set)?
 
-> ⚠️ **One input is "out of spirit": `magnetics_dsep`.** It is **EFIT-derived** — computed *from
-> the target equilibrium itself* — so it leaks x-point/divertor geometry from the label. **We keep
-> `dsep` in the dataset as-is, but treat it as out-of-spirit:** a model meant to run without
+> ⚠️ **One input is "out of spirit":** `magnetics_dsep`**.** It is **EFIT-derived** — computed *from
+> the target equilibrium itself* — so it leaks x-point/divertor geometry from the label. **We keep**
+> `dsep` **in the dataset as-is, but treat it as out-of-spirit:** a model meant to run without
 > magnetics should not depend on it. (`magnetics_plasma_current` (Ip) is also a magnetic
 > measurement, but a single legitimate global scalar — fine to use.) Build for the blind setting;
 > don't lean on `dsep`.
@@ -155,25 +166,36 @@ those as the real targets.
 
 ---
 
+
+
 ## 📁 Data Organization
 
 Record IDs clearly indicate the data source:
-- **`DIII-D_182494`** - DIII-D shot 182494
-- **`MAST_25607`** - MAST shot 25607
+
+- `DIII-D_182494` - DIII-D shot 182494
+- `MAST_25607` - MAST shot 25607
 
 Signal names are prefixed with the source:
-- **`DIII-D: F1A`** - DIII-D F1A coil current
-- **`MAST: P2L`** - MAST P2L coil current
+
+- `DIII-D: F1A` - DIII-D F1A coil current
+- `MAST: P2L` - MAST P2L coil current
 
 **Training & evaluation data** live on Hugging Face (`diii_d_train`, `diii_d_public_test`, `mast_public_test`). The `parquet_data/` folder here holds four **demo shots only** for local inspection and the dFL visualizer.
 
 ---
 
+
+
 ## 🎯 The Target: What you are predicting
-In physics terms, you are predicting the **Magnetic Equilibrium** ($\psi$).
-In Data Science terms, this might be looked at as a type of **Image Regression** problem.
+
+In physics terms, you are predicting the **Magnetic Equilibrium** — the 2D poloidal flux map
+$\psi(R,Z)$ plus **five scalar parameters** ($\beta_N$, $l_i$, $q_{95}$, $R_\text{axis}$,
+$Z_\text{axis}$). The plasma boundary (**LCFS**) is also scored, but you don't submit it
+separately — the scorer extracts it from your flux map. See **Output & Submission Format** for
+exactly what to submit and how it's scored.
 
 ### `efit/` (The Ground Truth)
+
 This data comes from a reconstruction code called "EFIT" (equilibrium fitting). 
 
 **Primary target — the flux map:**
@@ -199,66 +221,123 @@ Reconstructions often include electrical currents present in major conductors su
 
 ---
 
+
+
 ## 📤 Output & Submission Format
 
-> **Status: proposed draft.** Scoring is still being finalized. The rules below are the
-> maintainers' recommended convention — they're what the starter code and
-> `submission_skeleton.py` assume. Treat them as the default unless the official
-> competition page says otherwise.
+You submit **two things** for every shot, at each provided `efit_times` timestamp:
 
-**What you submit.** For every shot in a test config (`diii_d_public_test`,
-`mast_public_test`), predict the flux map `efit_psirz` at each provided `efit_times`
-timestamp, in the **machine's native grid**:
+1. **Flux map** `efit_psirz` — the 2D poloidal flux ψ(R,Z) in the machine's native grid.
+2. **Five scalars** — `betaN, li, q95, R_axis, Z_axis`: normalized beta, internal inductance,
+   edge safety factor q₉₅, and the magnetic-axis coordinates (in **meters**).
 
-| Machine | Predicted array per shot | Notes |
-|---------|--------------------------|-------|
-| DIII-D  | `(T, 65, 65)` float | full grid, all pixels valid |
-| MAST    | `(T, 65, 129)` float | central-column block (~50%) is NaN in the ground truth |
+You do **not** submit the LCFS contour. The scorer extracts the boundary from the flux map (a
+contour of ψ at the boundary value) for *both* your prediction and the ground truth, so getting ψ
+right is what drives the `D_LCFS` term — there's nothing extra to upload.
 
-- **Align to `efit_times`** — one 65×65 (or 65×129) map per target timestamp. Resample your
-  *inputs* to these times; never resample/interpolate the target grid itself.
+**Per-shot keys** (variable `T` = number of `efit_times`; grouped per shot in one `.npz` per
+config). Each scalar is its own named key — no positional column order to get wrong:
+
+
+| Key suffix                                  | Shape             | Notes                                                          |
+| ------------------------------------------- | ----------------- | -------------------------------------------------------------- |
+| `_psirz`                                    | `(T, H, W)` float | DIII-D `H,W = 65,65`; MAST `65,129` (central ~50% NaN allowed) |
+| `_betaN` `_li` `_q95` `_R_axis` `_Z_axis`   | `(T,)` float each | one scalar per key; `R_axis`/`Z_axis` in meters               |
+
+
+So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_betaN`, `shot_0000_li`,
+`shot_0000_q95`, `shot_0000_R_axis`, `shot_0000_Z_axis`, `shot_0001_psirz`, … in test-stream
+order. The skeleton writes a `manifest.json` alongside (per the rules, declaring which
+harmonization layer you used).
+
+- **Align to** `efit_times` — one prediction per target timestamp. Resample your *inputs* to these
+times; never resample/interpolate the target grid itself.
 - **Preserve shot order** — emit predictions in the same order the test split streams rows.
-- **One array per shot** (variable `T`); the skeleton stores them as `shot_0000`, `shot_0001`, …
-  in an `.npz`.
 
-**NaN handling (MAST).** The MAST ground truth is NaN in the central-column hardware region
-where no equilibrium exists. **You don't need to predict those pixels** — leave them NaN (or any
-value). The proposed scorer compares **only where the ground truth is finite**, so values in the
-NaN region are ignored. (DIII-D has no NaN region.)
+**NaN handling (MAST flux map).** The MAST `_psirz` ground truth is NaN in the central-column
+hardware region. **You don't need to predict those pixels** — the scorer's R²_ψ runs only over
+finite ground-truth points. (DIII-D has no NaN region.)
 
-**What the scorer compares (proposed).** Per frame, over finite ground-truth pixels:
-**SSIM** (primary — it rewards getting the *shape* right) plus **MSE / MAE / R²** (secondary).
-Scores are averaged **per frame, then per shot, then per machine** so long shots don't dominate,
-and DIII-D / MAST are reported separately (their flux ranges differ by ~10×). See
-`MODELING_GUIDE.md → Evaluation Metrics`.
+### How you're scored
 
-**Recommendation for organizers (not yet implemented):** publish a small held-out **labeled**
-MAST example (even one shot) or a fixed scoring script, so participants can validate output shape
-and NaN handling without guessing. Today the only labeled MAST reference is the git-LFS demo shot
-in `parquet_data/` — see `submission_skeleton.py` for a runnable, format-correct starting point.
+The leaderboard score is the **composite intra-machine score** (Award #1):
+
+```
+S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)        (clipped to [0, 1])
+```
+
+| Term         | What it measures                                                                              |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `R²_ψ`       | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
+| `R²_scalars` | Mean of the per-scalar R² across `betaN, li, q95, R_axis, Z_axis`. Clipped to ≥ 0.            |
+| `D_LCFS`     | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
+
+**Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
+`R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
+against held-out ground truth** — it is not part of this starter kit. See `MODELING_GUIDE.md →
+Evaluation Metrics`.
+
+**Validate your file before uploading (`validate_submission.py`).** This checks the *structure* of
+your submission (no ground truth, no score) so a malformed `.npz` doesn't burn a submission slot:
+
+```bash
+python validate_submission.py submission/diii_d_public_test.npz --config diii_d_public_test
+python validate_submission.py submission/mast_public_test.npz  --config mast_public_test
+```
+
+It confirms the per-shot keys (`_psirz` + the five scalar keys), shot order/count, per-shot `T`,
+native grid, and dtypes against the streamed public-test inputs — the errors that otherwise only
+surface after you submit.
+
+## 📮 How to Submit
+
+> **Placeholder — organizers to finalize the Codabench URL and dates below.**
+
+1. **Generate** predictions in the proposed format: `python submission_skeleton.py --max-shots 0`
+   (after swapping in your model). Produces `submission/diii_d_public_test.npz` and
+   `submission/mast_public_test.npz`.
+2. **Validate** each file with `validate_submission.py` (above) — a malformed `.npz` is the most
+   common cause of a failed submission.
+3. **Upload** to the challenge on **Codabench**: **`<CODABENCH COMPETITION URL — TBD>`**. The
+   platform scores your predictions against the held-out ground truth and updates the leaderboard.
+4. **Deadline:** **`<DATE — TBD>`**. **Per-team submission limit:** **`<TBD>`**.
+
+By submitting you agree to the official competition rules and the dataset terms (see the dataset
+card on Hugging Face and the Disclaimer below). Starter-kit code is MIT-licensed (`LICENSE`).
 
 ---
+
+
 
 ## 🔌 DIII-D: The Actuators (Magnets)
 
 DIII-D uses a set of shaping coils (F-coils) and main field coils to control the plasma.
 
 ### Shaping Coils (F-coils)
+
 These 18 coils act like invisible hands that mold the plasma:
 
-| Signal | Description | Range |
-|--------|-------------|-------|
+
+| Signal                              | Description         | Range     |
+| ----------------------------------- | ------------------- | --------- |
 | `DIII-D: F1A` through `DIII-D: F9A` | Upper shaping coils | ±10,000 A |
 | `DIII-D: F1B` through `DIII-D: F9B` | Lower shaping coils | ±10,000 A |
 
+
+
+
 ### Main Coils
 
-| Signal | Description |
-|--------|-------------|
-| `DIII-D: ECOILA` | Ohmic heating coil - central solenoid that drives plasma current |
-| `DIII-D: bcoil` | Toroidal field coil - main stability field going "around the track" |
+
+| Signal           | Description                                                         |
+| ---------------- | ------------------------------------------------------------------- |
+| `DIII-D: ECOILA` | Ohmic heating coil - central solenoid that drives plasma current    |
+| `DIII-D: bcoil`  | Toroidal field coil - main stability field going "around the track" |
+
 
 ---
+
+
 
 ### Additional Quantities
 
@@ -269,34 +348,44 @@ These 18 coils act like invisible hands that mold the plasma:
 
 ---
 
+
+
 ## 🔌 MAST: The Actuators (Magnets)
 
 MAST is a spherical tokamak with a different coil configuration than conventional tokamaks.
 
 ### Poloidal Field Coils (P-coils)
+
 MAST has 10 poloidal field coils (P2-P6, Lower and Upper):
 
-| Signal | Description |
-|--------|-------------|
+
+| Signal                          | Description                |
+| ------------------------------- | -------------------------- |
 | `MAST: P2L` through `MAST: P6L` | Lower poloidal field coils |
 | `MAST: P2U` through `MAST: P6U` | Upper poloidal field coils |
+
 
 **Note:** MAST has no P1, P7, P8, or P9 coils (different machine geometry).
 
 ### Main Coils
 
-| Signal | Description |
-|--------|-------------|
+
+| Signal           | Description                             |
+| ---------------- | --------------------------------------- |
 | `MAST: Solenoid` | Central solenoid (equivalent to ECOILA) |
-| `MAST: TF` | Toroidal field coil |
-| `MAST: Ip` | Plasma current measurement |
-| `MAST: EFPS` | Error field protection system coil |
+| `MAST: TF`       | Toroidal field coil                     |
+| `MAST: Ip`       | Plasma current measurement              |
+| `MAST: EFPS`     | Error field protection system coil      |
+
 
 ---
+
+
 
 ## 🌡️ Thomson Scattering (Both Machines)
 
 Both DIII-D and MAST use **Thomson Scattering** - lasers that bounce off electrons to measure:
+
 1. **Temperature ($T_e$):** How hot are the electrons? (eV)
 2. **Density ($n_e$):** How crowded are the electrons? (m⁻³)
 
@@ -304,29 +393,39 @@ Each system ships **one** spatial coordinate array (not an R/Z pair); which axis
 represents differs by machine, as noted below.
 
 ### Vertical "Core" System (Looking Down) — `thomson_core_*`
+
 Vertical view, named core for purely historical reasons.
 
-| Parquet column | Description |
-|-----|-------------|
-| `thomson_core_Te` | Electron temperature (eV), one profile per timestep |
-| `thomson_core_ne` | Electron density (m⁻³) |
-| `thomson_core_R` | Channel radial position(s) (m). **DIII-D:** constant ≈ 1.94 (vertical chord — channels vary in Z, which is not provided). **MAST:** per-channel R (≈ 0.25–1.5 m) |
-| `thomson_core_times` | Timestamps (ms) |
+
+| Parquet column       | Description                                                                                                                                                      |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thomson_core_Te`    | Electron temperature (eV), one profile per timestep                                                                                                              |
+| `thomson_core_ne`    | Electron density (m⁻³)                                                                                                                                           |
+| `thomson_core_R`     | Channel radial position(s) (m). **DIII-D:** constant ≈ 1.94 (vertical chord — channels vary in Z, which is not provided). **MAST:** per-channel R (≈ 0.25–1.5 m) |
+| `thomson_core_times` | Timestamps (ms)                                                                                                                                                  |
+
+
+
 
 ### Horizontal "Tangential" / Edge System (Looking Sideways) — `thomson_edge_*`
+
 Horizontal view, named tangential for purely historical reasons.
 
-| Parquet column | Description |
-|-----|-------------|
-| `thomson_edge_Te` | Electron temperature (eV) |
-| `thomson_edge_ne` | Electron density (m⁻³) |
+
+| Parquet column         | Description                                                                               |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `thomson_edge_Te`      | Electron temperature (eV)                                                                 |
+| `thomson_edge_ne`      | Electron density (m⁻³)                                                                    |
 | `thomson_edge_spatial` | Channel positions (m). **DIII-D:** Z (≈ −0.05 m near midplane). **MAST:** R (≈ 1.3–1.5 m) |
-| `thomson_edge_times` | Timestamps (ms) |
+| `thomson_edge_times`   | Timestamps (ms)                                                                           |
+
 
 There is no `tan_z`/`core_z` column: each machine provides a single spatial axis per
 system (DIII-D edge = Z, MAST edge = R; core radius in `thomson_core_R`).
 
 ---
+
+
 
 ## ⚡ Complete Signal Dictionary
 
@@ -336,10 +435,12 @@ in **milliseconds** (both machines).
 
 Diagnostic groups:
 
-- **`efit/*`** — magnetic equilibrium reconstruction (the *target*).
-- **`magnetics/*`** — coil currents (the *actuators*) and one EFIT-derived
-  scalar (`dsep`, the x-point gap; see "Equilibrium-Derived Quantities").
-- **`thomson/*`** — electron temperature & density profiles (the *sensors*).
+- `efit/*` — magnetic equilibrium reconstruction (the *target*).
+- `magnetics/*` — coil currents (the *actuators*) and one EFIT-derived
+scalar (`dsep`, the x-point gap; see "Equilibrium-Derived Quantities").
+- `thomson/*` — electron temperature & density profiles (the *sensors*).
+
+
 
 ### DIII-D columns
 
@@ -414,10 +515,12 @@ scalars) are not distributed. The two MAST demo shots in `parquet_data/` do incl
 
 - **Time units are ms everywhere**, including MAST (`magnetics_time`, `efit_times`, `magnetics_dsep_times`). MAST upstream stores some signals in seconds; the conversion is applied at parquet build time so participants don't have to think about it.
 - **Magnetics time base is shared per machine**: both DIII-D and MAST expose one `magnetics_time` array used by every coil signal at the primary sampling rate. On DIII-D, `magnetics_plasma_current` (Ip) sits on its own ADC at a different rate and therefore has its own `magnetics_plasma_current_times` companion.
-- **`dsep` is on the EFIT time base**: `magnetics_dsep_times` is identical to `efit_times` on every shot for both machines. It's grouped under `magnetics_*` only for column-naming consistency; physically it's an EFIT-derived geometric quantity, not a magnetic measurement.
-- **`magnetics_time` spans cover the full DAQ window** (pre-shot baseline through post-shot ringdown), so they extend well beyond the plasma's actual lifetime. The plasma window is bounded by `efit_times`.
+- `dsep` **is on the EFIT time base**: `magnetics_dsep_times` is identical to `efit_times` on every shot for both machines. It's grouped under `magnetics_`* only for column-naming consistency; physically it's an EFIT-derived geometric quantity, not a magnetic measurement.
+- `magnetics_time` **spans cover the full DAQ window** (pre-shot baseline through post-shot ringdown), so they extend well beyond the plasma's actual lifetime. The plasma window is bounded by `efit_times`.
 
 ---
+
+
 
 ## 🗂️ Repository Layout
 
@@ -431,20 +534,25 @@ fusion-equilibrium-challenge-starter/
 ├── fusion_data_provider.py        # dFL data provider (reads parquet_data/)
 ├── MODELING_GUIDE.md              # ML walkthrough
 ├── example_usage.py               # Load the Hugging Face dataset
-├── experiments.py                 # Baseline models (flux map + EFIT scalars; --source hf|local)
-├── experiments_torch.py           # PyTorch flux-map baselines (imported by experiments.py)
+├── experiments.py
+├── experiments_torch.py           # Baseline models (train from Hugging Face)
+├── submission_skeleton.py         # Produce a format-correct submission .npz
+├── validate_submission.py         # Shape-check a submission before uploading (no scoring)
 ├── pyproject.toml                 # uv / pip dependency source of truth
 ├── environment.yml                # conda / mamba alternative
 ├── requirements.txt               # core deps (plain pip)
 ├── requirements-pytorch.txt       # optional PyTorch baselines
 ├── uv.lock                        # pinned deps (uv)
 ├── my_experiments/                # YOUR custom work (gitignored — create as needed)
+├── LICENSE                        # MIT (starter-kit code; dataset has its own terms)
 └── README.md                      # This file
 ```
 
 Each demo parquet file is **one row per shot** with nested array columns (`efit_psirz`, coil currents, Thomson profiles, etc.). The full challenge dataset uses the same schema on [Hugging Face](https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge).
 
 ---
+
+
 
 ## 🔬 Key Differences Between Machines
 
@@ -461,17 +569,23 @@ Each demo parquet file is **one row per shot** with nested array columns (`efit_
 
 ---
 
+
+
 ## 🔍 Understanding the Flux Data
+
+
 
 ### Geometry Differences
 
 **DIII-D (Conventional Tokamak):**
+
 - Large central solenoid with substantial magnetic core
 - Plasma forms a "D" shape around the center
 - Flux data covers the full computational domain
-- Contours form a pattern concentric to the plasma axis that will appear more "shaped" at the boundary, becoming elliptic then circular close to the axis. 
+- Contours form a pattern concentric to the plasma axis that will appear more "shaped" at the boundary, becoming elliptic then circular close to the axis.
 
 **MAST (Spherical Tokamak):**
+
 - Very narrow central column (the "cored apple" design)
 - Plasma wraps tightly around a thin central post
 - More compact geometry but with unique measurement challenges
@@ -492,19 +606,22 @@ all-NaN columns defensively, so it renders both the corrected (65×65) and any l
 ### Flux Pattern Interpretation
 
 The `psirz` flux map is like a topographical map:
+
 - **Contour lines** = magnetic flux surfaces where plasma particles travel
 - **Innermost contours** = plasma core (hottest, densest region)
 - **Outermost contours** = plasma edge (separatrix boundary)
 - **Color gradient** = flux magnitude (V·s/rad)
+
+
 
 ### Checking out the data in the dFL (Data Fusion Labeler)
 
 The dFL can help you visualize any data (fusion or any other kind of dataset), and label the data for downstream ML/AI tasks.
 You can download the dFL here:
 
-Mac (Apple Silicon): https://github.com/Sophelio/dFL/releases/latest/download/Labeler-mac-arm64.dmg  
-Windows: https://github.com/Sophelio/dFL/releases/latest/download/Labeler-windows.exe  
-Linux: https://github.com/Sophelio/dFL/releases/latest/download/Labeler-linux.AppImage
+Mac (Apple Silicon): [https://github.com/Sophelio/dFL/releases/latest/download/Labeler-mac-arm64.dmg](https://github.com/Sophelio/dFL/releases/latest/download/Labeler-mac-arm64.dmg)  
+Windows: [https://github.com/Sophelio/dFL/releases/latest/download/Labeler-windows.exe](https://github.com/Sophelio/dFL/releases/latest/download/Labeler-windows.exe)  
+Linux: [https://github.com/Sophelio/dFL/releases/latest/download/Labeler-linux.AppImage](https://github.com/Sophelio/dFL/releases/latest/download/Labeler-linux.AppImage)
 
 Once you open the dFL, select a "custom script" and point it at `fusion_data_provider.py`. It will load the demo shots from `parquet_data/` in this repository.
 

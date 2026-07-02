@@ -295,21 +295,26 @@ Some signals may have NaN or Inf values at certain timesteps. Check for and hand
 
 ## Evaluation Metrics
 
-| Metric | What It Measures | Perfect Score |
-|--------|-----------------|---------------|
-| **MSE** | Average squared pixel error (flux map) | 0 |
-| **MAE** | Average absolute pixel error | 0 |
-| **R2** | Fraction of variance explained | 1.0 |
-| **SSIM** | Structural similarity (perceptual) | 1.0 |
+**The official leaderboard score is a composite over all three targets** (flux map, LCFS, scalars):
 
-For the **scalar targets**, each is scored with its own **R²** (and MAE), computed only
-over frames where the label is defined (e.g. `dsep` on limited frames is excluded).
-`dsep` in particular is scored as an *additional* scalar (`R²_dsep`), separate from the
-composite flux-map metric.
+```
+S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)        (clipped to [0, 1])
+```
 
-**R2 can be negative** -- this means the model is worse than just predicting the mean (flux map or scalar) every time. If your R2 is negative, your model is actively hurting rather than helping.
+| Term | What it measures | Good |
+|------|------------------|------|
+| **R²_ψ** | Global R² of the flux map over all (R,Z) points × timesteps × shots (clipped ≥ 0) | → 1 |
+| **R²_scalars** | Mean per-scalar R² across `betaN, li, q95, R_axis, Z_axis` (clipped ≥ 0) | → 1 |
+| **D_LCFS** | Symmetric Hausdorff distance between the LCFS contours extracted from your ψ and the true ψ, normalized by mean true LCFS major radius (clipped ≤ 1). You don't submit a contour — predict a good ψ. | → 0 |
 
-**SSIM** (Structural Similarity) is often the most meaningful metric for this problem because it measures whether the overall *shape* is right, not just whether individual pixel values match. A prediction that's shifted by a small constant might have high MSE but excellent SSIM.
+Cross-machine transfer (Award #2) is `G_ratio = S_model(MAST) / S_model(DIII-D)` among entries with
+`R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. **R² can be negative** before
+clipping — that means the model is worse than predicting the mean, and it scores 0 in the composite.
+
+**Diagnostic metrics (not the score).** The baselines in `experiments.py` also print **MSE / MAE /
+SSIM** on the flux map. These are quick intuition proxies — SSIM in particular tells you whether the
+overall *shape* is right rather than per-pixel values — but the leaderboard ranks on `S_model`, so
+treat them as sanity checks, not the objective.
 
 ---
 
