@@ -11,7 +11,13 @@ This repository is the **public starter kit** for the Fusion Equilibrium Challen
 
 - **Sample parquet shots** (2 DIII-D + 2 MAST) for offline exploration and dFL visualization
 - **Full training data** on Hugging Face: [`Sophelio/fusion-equilibrium-challenge`](https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge)
-- **Baseline models** in `experiments.py` that load from Hugging Face (same data hackathoners use)
+- **Baseline models** in `experiments.py` that load from Hugging Face (same data hackathoners use), and can also read a fully **downloaded** copy of the dataset with `--source local`
+
+> **What you predict:** the primary target is the 2-D flux map `efit_psirz`. Alongside it,
+> the corrected dataset ships **scored EFIT scalar labels** — `efit_beta_n`, `efit_li`,
+> `efit_q95`, `efit_r_axis`, `efit_z_axis` — plus the EFIT-derived x-point gap
+> `magnetics_dsep`. All of these are present in `diii_d_train` and **withheld on the test
+> splits**. `experiments.py` predicts and scores the scalars alongside the flux map.
 
 ### Environment setup
 
@@ -56,7 +62,16 @@ python example_usage.py
 # Train baseline models (loads diii_d_train from the Hub)
 python experiments.py --quick
 python experiments.py --n-shots 50 --epochs 50
+
+# Or train from a fully downloaded copy of the dataset (offline; no Hub streaming).
+# Expects the Hub layout: <local-data-dir>/data/<config>/*.parquet
+python experiments.py --source local --n-shots 50
+python experiments.py --source local --local-data-dir /path/to/hf_dataset
 ```
+
+The baselines predict the flux map **and** the EFIT scalar targets: after the flux-map
+models, a Ridge baseline reports per-scalar R² for `efit_beta_n`, `efit_li`, `efit_q95`,
+`efit_r_axis`, `efit_z_axis`, and `magnetics_dsep` (see `results/scalar_r2.png`).
 
 See `MODELING_GUIDE.md` for the ML walkthrough.
 
@@ -101,10 +116,24 @@ In Data Science terms, this might be looked at as a type of **Image Regression**
 ### `efit/` (The Ground Truth)
 This data comes from a reconstruction code called "EFIT" (equilibrium fitting). 
 
+**Primary target — the flux map:**
+
 | Key | Shape | Description |
 |-----|-------|-------------|
-| `efit/psirz` | DIII-D: (T, 65, 65)<br>MAST: (T, 65, 129) | Poloidal flux map - a 2D image at each timestep. Think of it like a topographical map where contour lines show the magnetic cage shape. |
-| `efit/psirz_times` | (T,) | Timestamps (ms) for the target images. Align all inputs to these times. |
+| `efit_psirz` | (T, 65, 65) (both machines) | Poloidal flux map - a 2D image at each timestep. Think of it like a topographical map where contour lines show the magnetic cage shape. *Withheld on test.* |
+| `efit_times` | (T,) | Timestamps (ms) for the target images. Align all inputs to these times. |
+| `efit_grid_R` / `efit_grid_Z` | (65,) | Physical R/Z (m) labelling the flux-map columns/rows (both machines). Kept on every split. |
+
+**Scored EFIT scalar targets** (one value per `efit_times` step; present in `train`, withheld on test):
+
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `efit_beta_n` | (T,) | Normalised beta β_N |
+| `efit_li` | (T,) | Internal inductance ℓi |
+| `efit_q95` | (T,) | Safety factor at the 95% flux surface |
+| `efit_r_axis` / `efit_z_axis` | (T,) | Magnetic-axis R/Z (m) |
+| `magnetics_dsep` | (T,) | X-point gap (m); `>0` diverted, `<0` limited. EFIT-derived — a **prediction target**, despite the `magnetics_` prefix. Undefined on limited/startup frames (NaN or `-1.0` sentinel); mask those before training/scoring. |
+| *(bonus, train only)* `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | (T,) / (T, N) | Last-closed-flux-surface boundary contour + valid-point count. Provided as context. |
 
 Reconstructions often include electrical currents present in major conductors such as the vacuum vessel, which for simplicity are omitted here. 
 
@@ -135,8 +164,8 @@ These 18 coils act like invisible hands that mold the plasma:
 
 | Signal | Description |
 |--------|-------------|
-| `DIII-D: ip` | Integrated electrical current carried in the plasma bulk|
-| `DIII-D: dsep` | Value indicating that plasma boundary has magnetic null "xpoint" (dsep>0) or does not (dsep<0)|
+| `DIII-D: ip` | Integrated electrical current carried in the plasma bulk (an **input**) |
+| `DIII-D: dsep` | X-point gap: `>0` diverted (magnetic null "xpoint"), `<0` limited. **EFIT-derived, so a prediction target** — present in `train`, withheld on test. |
 
 ---
 
@@ -212,14 +241,17 @@ Diagnostic groups:
   scalar (`dsep`, the x-point gap; see "Equilibrium-Derived Quantities").
 - **`thomson/*`** — electron temperature & density profiles (the *sensors*).
 
-### DIII-D columns (36 total)
+### DIII-D columns
 
 | Display name | Parquet column | Shape | Notes |
 |---|---|---|---|
 | — | `source` | scalar string | `"DIII-D"` |
-| **EFIT (target)** | | | |
+| **EFIT (targets)** | | | |
 | EFIT times | `efit_times` | `(T,)` float64 | ms; T ≈ 50–445 across the dataset (median ~260) |
-| EFIT psirz | `efit_psirz` | `(T,)` of `(65, 65)` | Poloidal flux maps (V·s/rad) |
+| EFIT psirz | `efit_psirz` | `(T,)` of `(65, 65)` | Poloidal flux maps (V·s/rad). *Primary target; withheld on test.* |
+| EFIT grid R/Z | `efit_grid_R`, `efit_grid_Z` | `(65,)` float64 | Physical R/Z (m) of the flux grid. Kept on every split. |
+| EFIT scalars | `efit_beta_n`, `efit_li`, `efit_q95`, `efit_r_axis`, `efit_z_axis` | `(T,)` float64 each | Scored scalar targets (β_N, ℓi, q95, axis R/Z). *Withheld on test.* |
+| EFIT boundary | `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | `(T,)` / `(T, N)` | LCFS contour + valid-point count. Bonus context in `train`. *Withheld on test.* |
 | **Magnetics time bases** | | | |
 | — | `magnetics_time` | `(49152,)` float32 | ms; shared by every magnetics signal at 49 kHz (ECOILA, bcoil, all F-coils) |
 | — | `magnetics_plasma_current_times` | `(30719,)` float32 | ms; Ip is on its own ADC at a different sample rate |
@@ -230,8 +262,8 @@ Diagnostic groups:
 | `DIII-D: Ip` | `magnetics_plasma_current` | `(30719,)` float32 | Plasma current (A). Uses `magnetics_plasma_current_times`. |
 | **Shaping coils (18)** | | | |
 | `DIII-D: F1A`–`F9B` | `magnetics_F{1-9}{A,B}` | `(49152,)` float64 each | Upper (A) / lower (B) shaping coils, ±10 kA. All use `magnetics_time`. |
-| **EFIT-derived** | | | |
-| `DIII-D: dsep` | `magnetics_dsep` | `(T,)` float32 | X-point gap (m). `>0` diverted, `<0` limited. Uses `magnetics_dsep_times`. |
+| **EFIT-derived (target)** | | | |
+| `DIII-D: dsep` | `magnetics_dsep` | `(T,)` float32 | X-point gap (m). `>0` diverted, `<0` limited. **Prediction target** (EFIT-derived), withheld on test. Uses `magnetics_dsep_times`. |
 | **Thomson core** (vertical chord, ~R = 1.94 m, looks down) | | | |
 | — | `thomson_core_times` | `(~1300–1900,)` float64 | ms |
 | — | `thomson_core_Te` | `(~T_c,)` of `(44,)` | Electron temperature (eV) per profile |
@@ -243,16 +275,20 @@ Diagnostic groups:
 | — | `thomson_edge_ne` | `(~T_e,)` of `(10,)` | Electron density (m⁻³) |
 | — | `thomson_edge_spatial` | `(10,)` float64 | Z positions (m) of the 10 tangential channels |
 
-### MAST columns (30 total)
+### MAST columns
+
+MAST is **zero-shot: a test split only**, so its EFIT targets (`efit_psirz` and the
+scalars) are not distributed. The two MAST demo shots in `parquet_data/` do include a
+`efit_psirz` (clean 65×65) purely for dFL visualization.
 
 | Display name | Parquet column | Shape | Notes |
 |---|---|---|---|
 | — | `source` | scalar string | `"MAST"` |
-| **EFIT (target)** | | | |
+| **EFIT (targets — withheld on the MAST test split)** | | | |
 | EFIT times | `efit_times` | `(T,)` float64 | ms; T ≈ 50–139 across the dataset (median ~82) |
-| EFIT psirz | `efit_psirz` | `(T,)` of `(65, 129)` | Flux maps; left ~50% is NaN (central column hardware) |
-| EFIT grid R | `efit_grid_R` | `(65,)` float64 | Physical R (m) for the flux grid |
-| EFIT grid Z | `efit_grid_Z` | `(65,)` float64 | Physical Z (m) for the flux grid |
+| EFIT psirz | `efit_psirz` | `(T,)` of `(65, 65)` | Clean 65×65 flux map (no NaNs). Upstream MAST stores psirz on a doubled 129-column R grid — 65 real columns interleaved with 64 empty ones — which we drop to recover the dense grid. |
+| EFIT grid R | `efit_grid_R` | `(65,)` float64 | Physical R (m) for the flux grid (≈ 0.06–2.0 m) |
+| EFIT grid Z | `efit_grid_Z` | `(65,)` float64 | Physical Z (m) for the flux grid (≈ −2.0–2.0 m) |
 | **Magnetics (shared time base)** | | | |
 | — | `magnetics_time` | `(15482,)` float64 | ms; shared by every MAST magnetics signal |
 | `MAST: Ip` | `magnetics_plasma_current` | `(15482,)` float64 | Plasma current (A) |
@@ -288,14 +324,15 @@ Diagnostic groups:
 ```
 fusion-equilibrium-challenge-starter/
 ├── parquet_data/                  # 4 demo shots (2 DIII-D + 2 MAST) for dFL / offline peek
-│   ├── d3d_shot_0989d67fff.parquet
-│   ├── d3d_shot_0f1785e2af.parquet
+│   ├── d3d_shot_182344.parquet
+│   ├── d3d_shot_182348.parquet
 │   ├── mast_shot_46ba321f4b.parquet
 │   └── mast_shot_70a5dc7a98.parquet
 ├── fusion_data_provider.py        # dFL data provider (reads parquet_data/)
 ├── MODELING_GUIDE.md              # ML walkthrough
 ├── example_usage.py               # Load the Hugging Face dataset
-├── experiments.py                 # Baseline models (train from Hugging Face)
+├── experiments.py                 # Baseline models (flux map + EFIT scalars; --source hf|local)
+├── experiments_torch.py           # PyTorch flux-map baselines (imported by experiments.py)
 ├── pyproject.toml                 # uv / pip dependency source of truth
 ├── environment.yml                # conda / mamba alternative
 ├── requirements.txt               # core deps (plain pip)
@@ -314,7 +351,7 @@ Each demo parquet file is **one row per shot** with nested array columns (`efit_
 |---------|--------|------|
 | **Location** | San Diego, USA | Culham, UK |
 | **Type** | Conventional tokamak | Spherical tokamak |
-| **Flux grid shape** | 65×65 | 65×129 (raw), 65×65 (valid) |
+| **Flux grid shape** | 65×65 | 65×65 (dense; upstream 65×129 empty columns dropped) |
 | **R coordinates** | Normalized 0-1 | Physical: 0.12 - 2.0 m |
 | **Z coordinates** | Normalized 0-1 | Physical: -2.0 to 2.0 m |
 | **Shaping coils** | 18 (F1A-F9B) | 10 (P2L-P6U) |
@@ -339,15 +376,17 @@ Each demo parquet file is **one row per shot** with nested array columns (`efit_
 - More compact geometry but with unique measurement challenges
 - Contours wrap around the hollow center, forming an asymmetric kidney-bean shape
 
-### Why MAST Has NaN Values
+### MAST's 65×65 grid (and why the raw grid was 65×129)
 
-The raw MAST flux grid (65×129) contains ~50% NaN values. These represent the **central column region** - the narrow physical support structure running through the center of the spherical tokamak:
+The corrected dataset ships MAST `efit_psirz` as a clean **65×65** grid with **no NaNs**,
+matching DIII-D's dimensions. This is not a physical hole — it's a grid artifact:
+MAST's upstream EFIT stores `psirz` on a doubled 129-column R grid, where **65 real R
+columns are interleaved with 64 empty ones**. We drop the empty columns to recover the
+dense grid the data is actually defined on (MAST R ∈ [0.06, 2.0] m, Z ∈ [−2.0, 2.0] m).
 
-1. **No plasma exists there** - it's hardware (magnets, vacuum vessel)
-2. **No flux can be computed** - EFIT reconstruction requires plasma
-3. **The "hole" is cylindrical** - valid data starts at R ≈ 0.12 m
-
-For visualization, we filter to only the 65 valid R columns, giving a clean 65×65 grid that matches DIII-D's dimensions while showing only the physical plasma region.
+The dFL flux grapher in `fusion_data_provider.py` additionally filters any remaining
+all-NaN columns defensively, so it renders both the corrected (65×65) and any legacy
+(65×129) shots correctly.
 
 ### Flux Pattern Interpretation
 

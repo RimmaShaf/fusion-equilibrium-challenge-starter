@@ -28,6 +28,37 @@ The plasma lives inside the deepest "valley" of this map. The shape of that vall
 
 A single fusion experiment ("shot") lasts a few seconds, but a LOT happens. We get roughly 300 of these 65x65 snapshots per shot, each at a different moment in time. So one shot gives us ~300 target images.
 
+### Beyond the Flux Map: Scalar Targets
+
+The flux map is the *primary* target, but the corrected dataset also ships a handful of
+**scored EFIT scalar labels** — one number per timestep — that summarise the equilibrium:
+
+| Column | Plain English |
+|--------|---------------|
+| `efit_beta_n` | Normalised beta β_N — roughly, how much plasma pressure you're holding for the field you're using (an efficiency/stability number) |
+| `efit_li` | Internal inductance ℓi — how peaked vs. broad the current profile is |
+| `efit_q95` | Safety factor at the 95% flux surface — a key stability number (how many times field lines wind the long way per short-way loop near the edge) |
+| `efit_r_axis`, `efit_z_axis` | Where the magnetic axis (the very center of the "valley") sits, in meters |
+| `magnetics_dsep` | The x-point gap — `>0` diverted, `<0` limited. EFIT-derived, so a **target** despite its `magnetics_` name |
+
+These are present in `diii_d_train` and **withheld on the test splits**, exactly like
+`efit_psirz`. `experiments.py` predicts them with a simple per-scalar Ridge baseline and
+reports R² for each (see `results/scalar_r2.png`). Two practical notes:
+
+- **They live on a totally different scale from the flux pixels.** Predict them as their
+  own regression targets (raw values), not by squishing them into the flux-map pipeline.
+- **`dsep` is undefined on limited/startup frames** — it shows up as `NaN` or a `-1.0`
+  gap sentinel (~40% of MAST frames, less on DIII-D). **Mask those frames** before
+  training or scoring `dsep`; the starter code does this for you.
+- **The five scored scalars can also be `NaN`** on frames with incomplete reconstruction
+  (a few startup/rampdown frames, plus some frames on a handful of DIII-D shots whose
+  scalars sat on a slightly offset EFIT time base). All five share the same valid frames,
+  so one `NaN` mask covers them. The starter code masks per-scalar automatically.
+
+A natural extension of the neural-net baselines is to add a small **scalar head** (an
+extra output branch trained against these labels) alongside the flux-map decoder, so one
+network predicts both the image and the summary scalars.
+
 ### Why the Plots Might Look Different from the dFL Labeler
 
 If you've used the dFL (Data Fusion Labeler) to visualize this data, you may notice model output plots can look different. Here's why:
@@ -266,12 +297,17 @@ Some signals may have NaN or Inf values at certain timesteps. Check for and hand
 
 | Metric | What It Measures | Perfect Score |
 |--------|-----------------|---------------|
-| **MSE** | Average squared pixel error | 0 |
+| **MSE** | Average squared pixel error (flux map) | 0 |
 | **MAE** | Average absolute pixel error | 0 |
 | **R2** | Fraction of variance explained | 1.0 |
 | **SSIM** | Structural similarity (perceptual) | 1.0 |
 
-**R2 can be negative** -- this means the model is worse than just predicting the mean flux map every time. If your R2 is negative, your model is actively hurting rather than helping.
+For the **scalar targets**, each is scored with its own **R²** (and MAE), computed only
+over frames where the label is defined (e.g. `dsep` on limited frames is excluded).
+`dsep` in particular is scored as an *additional* scalar (`R²_dsep`), separate from the
+composite flux-map metric.
+
+**R2 can be negative** -- this means the model is worse than just predicting the mean (flux map or scalar) every time. If your R2 is negative, your model is actively hurting rather than helping.
 
 **SSIM** (Structural Similarity) is often the most meaningful metric for this problem because it measures whether the overall *shape* is right, not just whether individual pixel values match. A prediction that's shifted by a small constant might have high MSE but excellent SSIM.
 
