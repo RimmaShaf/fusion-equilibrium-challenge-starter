@@ -1,4 +1,11 @@
-"""PyTorch baseline models — imported only when torch is installed."""
+"""PyTorch baseline models — imported only when torch is installed.
+
+These baselines predict the 2-D flux map (`efit_psirz`). The scored EFIT scalar
+labels (`efit_beta_n`, `efit_li`, `efit_q95`, `efit_r_axis`, `efit_z_axis`,
+`magnetics_dsep`) are predicted with a Ridge baseline in ``experiments.py`` and run
+regardless of the PyTorch install — extending these networks with a scalar head is a
+natural next step (add an extra output branch trained against ``data["S_train"]``).
+"""
 
 from __future__ import annotations
 
