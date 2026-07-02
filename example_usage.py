@@ -22,7 +22,7 @@ from datasets import load_dataset
 REPO_ID = "Sophelio/fusion-equilibrium-challenge"
 
 # Scored EFIT scalar labels (present in train, withheld on test)
-SCALAR_TARGETS = ["efit_beta_n", "efit_li", "efit_q95", "efit_r_axis", "efit_z_axis"]
+SCALAR_TARGETS = ["efit_beta_n", "efit_li", "efit_q95", "efit_r_axis", "efit_z_axis", "magnetics_dsep"]
 
 
 def main() -> None:
