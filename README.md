@@ -19,6 +19,19 @@ This repository is the **public starter kit** for the Fusion Equilibrium Challen
 > `magnetics_dsep`. All of these are present in `diii_d_train` and **withheld on the test
 > splits**. `experiments.py` predicts and scores the scalars alongside the flux map.
 
+### Get the demo shots (Git LFS)
+
+The four files in `parquet_data/` are tracked with **Git LFS**. If you cloned without LFS
+installed you'll see ~130-byte pointer files instead of real data, and the dFL visualizer
+won't load. Install LFS once, then pull the blobs:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+The **training/evaluation data on Hugging Face does not need LFS** — only the local demo shots do.
+
 ### Environment setup
 
 Pick **uv** (recommended) or **conda/mamba**. Both create a self-contained environment for this repo — no need for a pre-existing Sophelio conda env.
@@ -73,7 +86,23 @@ The baselines predict the flux map **and** the EFIT scalar targets: after the fl
 models, a Ridge baseline reports per-scalar R² for `efit_beta_n`, `efit_li`, `efit_q95`,
 `efit_r_axis`, `efit_z_axis`, and `magnetics_dsep` (see `results/scalar_r2.png`).
 
+PyTorch baselines auto-detect the best device (CUDA → MPS → CPU); override with
+`--device cuda|mps|cpu`.
+
 See `MODELING_GUIDE.md` for the ML walkthrough.
+
+### Your own experiments → `my_experiments/`
+
+Keep your custom models, scratch scripts, cached shots, and result images in a
+**`my_experiments/`** folder at the repo root. It's listed in `.gitignore`, so your work
+stays local and never collides with the starter kit when you `git pull` updates. The starter
+modules are importable from there:
+
+```python
+import sys; from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from experiments import load_shot_from_hf_row, interpolate_magnetics_to_efit  # etc.
+```
 
 ---
 
@@ -92,6 +121,37 @@ Usually, we use magnetic sensors to "feel" where the jelly is. **But in this cha
 **Your Mission:** You must infer the exact shape of the jelly in the donut using only:
 1.  **The Knobs:** How much current you are sending to the electromagnets.
 2.  **The Thermometer:** Lasers that measure how hot and dense the jelly is at specific points.
+
+### What "blind" really means — and why it matters
+
+Conventional EFIT reconstructs the 2D equilibrium from a dedicated suite of **magnetic
+diagnostics**: an array of magnetic field probes and flux loops mounted around the vessel
+that "feel" the plasma's own field. **This challenge withholds that diagnostic array.** Your
+inputs are only:
+
+- **Actuators** — the *commanded* coil currents (`magnetics_F*`, `ECOILA`/`bcoil`, MAST P-coils,
+  `Solenoid`, `TF`, …). These are knobs you *drive*, not measurements of the plasma's field.
+- **Kinetic profiles** — Thomson scattering electron temperature & density (`thomson_*`).
+
+The motivation is concrete and physical: if a model can reconstruct the equilibrium **without a
+magnetic-diagnostic suite**, a tokamak could be built and operated more cheaply without that
+instrumentation — or keep reconstructing when those sensors degrade or fail. This is the *proper
+zero-shot* goal: equilibrium reconstruction from actuators + kinetic profiles alone. The
+**MAST track** pushes it one step further — can the learned physics reconstruct a machine the
+model has **never seen** (different size, shape, and coil set)?
+
+> ⚠️ **One input is "out of spirit": `magnetics_dsep`.** It is **EFIT-derived** — computed *from
+> the target equilibrium itself* — so it leaks x-point/divertor geometry from the label. **We keep
+> `dsep` in the dataset as-is, but treat it as out-of-spirit:** a model meant to run without
+> magnetics should not depend on it. (`magnetics_plasma_current` (Ip) is also a magnetic
+> measurement, but a single legitimate global scalar — fine to use.) Build for the blind setting;
+> don't lean on `dsep`.
+
+The data isn't *purely* zero-shot (Ip is a real measurement; `dsep` is out-of-spirit), but that's
+fine — the setup is a strong starting point for the two things that matter most here: **cross-machine
+robustness** (models that learn physics, not one machine's wiring) and **synthetic diagnostics**
+(deriving machine-agnostic, physics-meaningful inputs from actuators + kinetic profiles). Treat
+those as the real targets.
 
 ---
 
@@ -136,6 +196,46 @@ This data comes from a reconstruction code called "EFIT" (equilibrium fitting).
 | *(bonus, train only)* `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | (T,) / (T, N) | Last-closed-flux-surface boundary contour + valid-point count. Provided as context. |
 
 Reconstructions often include electrical currents present in major conductors such as the vacuum vessel, which for simplicity are omitted here. 
+
+---
+
+## 📤 Output & Submission Format
+
+> **Status: proposed draft.** Scoring is still being finalized. The rules below are the
+> maintainers' recommended convention — they're what the starter code and
+> `submission_skeleton.py` assume. Treat them as the default unless the official
+> competition page says otherwise.
+
+**What you submit.** For every shot in a test config (`diii_d_public_test`,
+`mast_public_test`), predict the flux map `efit_psirz` at each provided `efit_times`
+timestamp, in the **machine's native grid**:
+
+| Machine | Predicted array per shot | Notes |
+|---------|--------------------------|-------|
+| DIII-D  | `(T, 65, 65)` float | full grid, all pixels valid |
+| MAST    | `(T, 65, 129)` float | central-column block (~50%) is NaN in the ground truth |
+
+- **Align to `efit_times`** — one 65×65 (or 65×129) map per target timestamp. Resample your
+  *inputs* to these times; never resample/interpolate the target grid itself.
+- **Preserve shot order** — emit predictions in the same order the test split streams rows.
+- **One array per shot** (variable `T`); the skeleton stores them as `shot_0000`, `shot_0001`, …
+  in an `.npz`.
+
+**NaN handling (MAST).** The MAST ground truth is NaN in the central-column hardware region
+where no equilibrium exists. **You don't need to predict those pixels** — leave them NaN (or any
+value). The proposed scorer compares **only where the ground truth is finite**, so values in the
+NaN region are ignored. (DIII-D has no NaN region.)
+
+**What the scorer compares (proposed).** Per frame, over finite ground-truth pixels:
+**SSIM** (primary — it rewards getting the *shape* right) plus **MSE / MAE / R²** (secondary).
+Scores are averaged **per frame, then per shot, then per machine** so long shots don't dominate,
+and DIII-D / MAST are reported separately (their flux ranges differ by ~10×). See
+`MODELING_GUIDE.md → Evaluation Metrics`.
+
+**Recommendation for organizers (not yet implemented):** publish a small held-out **labeled**
+MAST example (even one shot) or a fixed scoring script, so participants can validate output shape
+and NaN handling without guessing. Today the only labeled MAST reference is the git-LFS demo shot
+in `parquet_data/` — see `submission_skeleton.py` for a runnable, format-correct starting point.
 
 ---
 
@@ -338,6 +438,7 @@ fusion-equilibrium-challenge-starter/
 ├── requirements.txt               # core deps (plain pip)
 ├── requirements-pytorch.txt       # optional PyTorch baselines
 ├── uv.lock                        # pinned deps (uv)
+├── my_experiments/                # YOUR custom work (gitignored — create as needed)
 └── README.md                      # This file
 ```
 
