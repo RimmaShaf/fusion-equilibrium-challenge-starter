@@ -151,15 +151,15 @@ zero-shot* goal: equilibrium reconstruction from actuators + kinetic profiles al
 **MAST track** pushes it one step further — can the learned physics reconstruct a machine the
 model has **never seen** (different size, shape, and coil set)?
 
-> ⚠️ **One input is "out of spirit":** `magnetics_dsep`**.** It is **EFIT-derived** — computed *from
-> the target equilibrium itself* — so it leaks x-point/divertor geometry from the label. **We keep**
-> `dsep` **in the dataset as-is, but treat it as out-of-spirit:** a model meant to run without
-> magnetics should not depend on it. (`magnetics_plasma_current` (Ip) is also a magnetic
-> measurement, but a single legitimate global scalar — fine to use.) Build for the blind setting;
-> don't lean on `dsep`.
+> ⚠️ **`magnetics_dsep` is a prediction target, not an input.** It is **EFIT-derived** — computed
+> *from the target equilibrium itself* — so it encodes x-point/divertor geometry straight from the
+> label. That makes it a **target**, not a blind input: it is **withheld on the test splits**
+> (alongside `efit_psirz` and the scalar labels) and **scored separately as `R²_dsep`**. Never read
+> `dsep` as a model input — predict it. (`magnetics_plasma_current` (Ip) *is* an allowed input: a
+> single legitimate global magnetic scalar, not label-derived.)
 
-The data isn't *purely* zero-shot (Ip is a real measurement; `dsep` is out-of-spirit), but that's
-fine — the setup is a strong starting point for the two things that matter most here: **cross-machine
+The data isn't *purely* zero-shot — Ip is a real global measurement you may use — but that's fine:
+the setup is a strong starting point for the two things that matter most here: **cross-machine
 robustness** (models that learn physics, not one machine's wiring) and **synthetic diagnostics**
 (deriving machine-agnostic, physics-meaningful inputs from actuators + kinetic profiles). Treat
 those as the real targets.
@@ -241,22 +241,25 @@ config). Each scalar is its own named key — no positional column order to get 
 
 | Key suffix                                  | Shape             | Notes                                                          |
 | ------------------------------------------- | ----------------- | -------------------------------------------------------------- |
-| `_psirz`                                    | `(T, H, W)` float | DIII-D `H,W = 65,65`; MAST `65,129` (central ~50% NaN allowed) |
+| `_psirz`                                    | `(T, H, W)` float | Both machines dense `H,W = 65,65` (DIII-D `65,65`; MAST `65,65`) |
 | `_betaN` `_li` `_q95` `_R_axis` `_Z_axis`   | `(T,)` float each | one scalar per key; `R_axis`/`Z_axis` in meters               |
+| `_dsep`                                     | `(T,)` float      | x-point gap; **scored separately as `R²_dsep`**, not in the composite |
 
 
 So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_betaN`, `shot_0000_li`,
-`shot_0000_q95`, `shot_0000_R_axis`, `shot_0000_Z_axis`, `shot_0001_psirz`, … in test-stream
-order. The skeleton writes a `manifest.json` alongside (per the rules, declaring which
+`shot_0000_q95`, `shot_0000_R_axis`, `shot_0000_Z_axis`, `shot_0000_dsep`, `shot_0001_psirz`, … in
+test-stream order. The skeleton writes a `manifest.json` alongside (per the rules, declaring which
 harmonization layer you used).
 
 - **Align to** `efit_times` — one prediction per target timestamp. Resample your *inputs* to these
 times; never resample/interpolate the target grid itself.
 - **Preserve shot order** — emit predictions in the same order the test split streams rows.
 
-**NaN handling (MAST flux map).** The MAST `_psirz` ground truth is NaN in the central-column
-hardware region. **You don't need to predict those pixels** — the scorer's R²_ψ runs only over
-finite ground-truth points. (DIII-D has no NaN region.)
+**Flux map is dense on both machines.** The corrected MAST `_psirz` is a dense 65×65 grid — the
+upstream EFIT stored it on a doubled 65×129 R grid (65 real columns interleaved with 64 empty
+ones), which the dataset collapses to the 65 real columns. So, like DIII-D, MAST has **no
+central-column NaN region** to skip. The scorer's R²_ψ is still computed only over finite
+ground-truth pixels, so any occasional non-finite frame is handled for you.
 
 ### How you're scored
 
@@ -272,6 +275,11 @@ S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)      
 | `R²_scalars` | Mean of the per-scalar R² across `betaN, li, q95, R_axis, Z_axis`. Clipped to ≥ 0.            |
 | `D_LCFS`     | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
 
+**`dsep` is scored separately as `R²_dsep`** — the R² of your predicted x-point gap, computed only
+over frames where the *true* `dsep` is finite (NaN / `−1.0` sentinel frames are excluded). It is
+**reported alongside** the composite but **not folded into `S_model`**. You still submit a `dsep`
+prediction per shot (see **Output & Submission Format**).
+
 **Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
 against held-out ground truth** — it is not part of this starter kit. See `MODELING_GUIDE.md →
@@ -285,7 +293,7 @@ python validate_submission.py submission/diii_d_public_test.npz --config diii_d_
 python validate_submission.py submission/mast_public_test.npz  --config mast_public_test
 ```
 
-It confirms the per-shot keys (`_psirz` + the five scalar keys), shot order/count, per-shot `T`,
+It confirms the per-shot keys (`_psirz` + the five scalar keys + `_dsep`), shot order/count, per-shot `T`,
 native grid, and dtypes against the streamed public-test inputs — the errors that otherwise only
 surface after you submit.
 
@@ -526,11 +534,13 @@ scalars) are not distributed. The two MAST demo shots in `parquet_data/` do incl
 
 ```
 fusion-equilibrium-challenge-starter/
-├── parquet_data/                  # 4 demo shots (2 DIII-D + 2 MAST) for dFL / offline peek
-│   ├── d3d_shot_182344.parquet
-│   ├── d3d_shot_182348.parquet
-│   ├── mast_shot_46ba321f4b.parquet
-│   └── mast_shot_70a5dc7a98.parquet
+├── parquet_data/                  # 6 demo shots (3 DIII-D + 3 MAST) for dFL / offline peek
+│   ├── d3d_shot_203702.parquet
+│   ├── d3d_shot_203703.parquet
+│   ├── d3d_shot_203704.parquet
+│   ├── mast_shot_28348.parquet
+│   ├── mast_shot_28350.parquet
+│   └── mast_shot_28351.parquet
 ├── fusion_data_provider.py        # dFL data provider (reads parquet_data/)
 ├── MODELING_GUIDE.md              # ML walkthrough
 ├── example_usage.py               # Load the Hugging Face dataset
