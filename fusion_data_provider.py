@@ -4,7 +4,9 @@ Fusion Data Challenge Data Provider
 This provider handles fusion plasma data from DIII-D and MAST in Parquet format.
 
 The data includes:
-- Target: Magnetic flux maps (psirz) - 2D images over time
+- Target: Magnetic flux map (psirz) - 2D images over time
+- Targets: EFIT scalar labels (efit_beta_n, efit_li, efit_q95, efit_r_axis, efit_z_axis)
+  and the EFIT-derived x-point gap (magnetics_dsep) - one value per efit_times step
 - Inputs: Coil currents (magnetics) and Thomson scattering measurements
 
 Due to the multidimensional nature of the data, this provider uses custom graphers
@@ -19,13 +21,16 @@ DIII-D (General Atomics, San Diego):
   - Coils: F1A-F9B (shaping), ECOILA (ohmic), bcoil (toroidal)
 
 MAST (Mega Ampere Spherical Tokamak, UK):
-  - Flux grid: 65x129 (rectangular)
+  - Flux grid: 65x65 (corrected dataset; the upstream 65x129 grid interleaves 65 real
+    R columns with 64 empty ones, which are dropped to recover the dense 65x65 grid).
+    The flux grapher also filters any remaining all-NaN columns defensively.
   - Coils: P2L-P6U (poloidal), Solenoid, TF, Ip
 
 Data Format:
   - Parquet files: parquet_data/d3d_shot_XXXXX.parquet or parquet_data/mast_shot_XXXXX.parquet
   - One row per shot (all data as nested arrays)
-  - Columns: efit_times, efit_psirz, magnetics_time, magnetics_*, thomson_core_times, thomson_core_*
+  - Columns: efit_times, efit_psirz, efit_grid_R/Z, efit_beta_n/li/q95/r_axis/z_axis,
+    magnetics_time, magnetics_*, thomson_core_times, thomson_core_*
 
 File: apps/fusion_data_challenge/fusion_data_provider.py
 """
@@ -471,6 +476,27 @@ class ParquetDataWrapper:
         except Exception:
             return None, None
 
+    def get_efit_scalar(self, column: str) -> tuple:
+        """
+        Get an EFIT scalar target (one value per efit_times step) and its time array.
+
+        These are the scored equilibrium summaries added in the corrected dataset:
+        efit_beta_n, efit_li, efit_q95, efit_r_axis, efit_z_axis. Present in `train`
+        and withheld on the test splits.
+
+        Returns (values, efit_times), or (None, None) if the column is absent.
+        """
+        if self.df is None or column not in self.df.columns:
+            return None, None
+        try:
+            values = np.asarray(self.df[column].iloc[0], dtype=float).ravel()
+            times = self.get_efit_times()
+            if times is None:
+                times = np.arange(len(values), dtype=float)
+            return values, times
+        except Exception:
+            return None, None
+
     def get_grid_coords(self, flux_shape: tuple) -> tuple:
         """
         Get R and Z coordinate arrays for the flux grid.
@@ -667,6 +693,7 @@ def fetch_data(
         "thomson_scattering_tangential",
         "diagnostics_overview",
         "dsep_xpoint_gap",
+        "efit_scalars",
     }
     
     if calling_graph is not None and calling_graph in valid_graphers:
@@ -1404,6 +1431,92 @@ def grapher_dsep_xpoint_gap(app_control_parameters: Dict[str, Any], parameters: 
     return fig
 
 
+def grapher_efit_scalars(app_control_parameters: Dict[str, Any], parameters: Dict[str, Any]):
+    """
+    Plot the scored EFIT scalar targets vs time.
+
+    These are the equilibrium-summary labels added in the corrected dataset — normalised
+    beta, internal inductance, edge safety factor, and the magnetic-axis R/Z position.
+    They are EFIT-derived prediction targets (present in `train`, withheld on test),
+    shown here on the demo shots for context.
+    """
+    if not PLOTLY_AVAILABLE:
+        return "Plotly not installed. Install with: pip install plotly"
+
+    theme_value = app_control_parameters.get('theme_value', 'light')
+    theme_colors = _get_theme_colors(theme_value)
+
+    dc = app_control_parameters.get("data_coordinator")
+    record_id = app_control_parameters.get("record_id")
+    if dc is None or record_id is None:
+        return "Error: No data coordinator or record ID available"
+
+    try:
+        data = dc.fetch_data(
+            dc.data_folder, None, record_id, None, {}, None, None,
+            calling_graph="efit_scalars"
+        )
+    except TypeError:
+        data = dc.fetch_data(dc.data_folder, None, record_id, None, {}, None, None)
+
+    if data.get("error_message"):
+        return f"Error: {data['error_message']}"
+
+    data_wrapper = data.get("data_wrapper")
+    if data_wrapper is None:
+        return "Error: No data wrapper available"
+
+    # (column, label, unit)
+    scalars = [
+        ("efit_beta_n", "β_N (normalised beta)", ""),
+        ("efit_li", "ℓi (internal inductance)", ""),
+        ("efit_q95", "q95 (safety factor)", ""),
+        ("efit_r_axis", "R_axis (magnetic axis)", "m"),
+        ("efit_z_axis", "Z_axis (magnetic axis)", "m"),
+    ]
+    available = []
+    for col, label, unit in scalars:
+        values, times = data_wrapper.get_efit_scalar(col)
+        if values is not None and times is not None:
+            available.append((label, unit, np.asarray(times, dtype=float), np.asarray(values, dtype=float)))
+    data_wrapper.close()
+
+    if not available:
+        return ("Error: no EFIT scalar targets found in this shot. Expected columns like "
+                "efit_beta_n, efit_li, efit_q95, efit_r_axis, efit_z_axis (present in train).")
+
+    n = len(available)
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True,
+                        subplot_titles=[a[0] for a in available], vertical_spacing=0.06)
+    color = theme_colors['text_primary']
+    time_unit = None
+    for i, (label, unit, times, values) in enumerate(available, start=1):
+        finite = np.isfinite(times) & np.isfinite(values)
+        t, v = times[finite], values[finite]
+        if time_unit is None and t.size:
+            time_unit = "s" if t.max() < 10.0 else "ms"
+        fig.add_trace(
+            go.Scatter(x=t, y=v, mode='lines', line=dict(color=color, width=1.5),
+                       name=label, showlegend=False,
+                       hovertemplate='t=%{x:.1f}<br>%{y:.4g}<extra>' + label + '</extra>'),
+            row=i, col=1,
+        )
+        ytitle = unit if unit else ""
+        fig.update_yaxes(title_text=ytitle, row=i, col=1,
+                         color=color, gridcolor=theme_colors['border'])
+    fig.update_xaxes(title_text=f"Time ({time_unit or 'ms'})", row=n, col=1,
+                     color=color, gridcolor=theme_colors['border'])
+    fig.update_layout(
+        paper_bgcolor=theme_colors['background'],
+        plot_bgcolor=theme_colors['plot_bgcolor'],
+        font=dict(color=color, size=12, family="Cascadia Mono, Cascadia Mono PL, monospace"),
+        title=dict(text=f"Shot {record_id}: EFIT scalar targets",
+                   font=dict(size=16, color=color)),
+        height=max(500, 180 * n),
+    )
+    return fig
+
+
 def grapher_thomson_scattering_tangential(app_control_parameters: Dict[str, Any], parameters: Dict[str, Any]):
     """
     Plot Thomson scattering tangential system profiles as heatmap (temperature and density vs vertical position over time).
@@ -1665,6 +1778,11 @@ def get_provider(_: Any) -> Dict[str, Any]:
             "display_name": "X-Point Gap (dsep)",
             "parameters": {},
             "function": grapher_dsep_xpoint_gap
+        },
+        "efit_scalars": {
+            "display_name": "EFIT Scalar Targets",
+            "parameters": {},
+            "function": grapher_efit_scalars
         },
         "thomson_scattering_tangential": {
             "display_name": "Thomson Scattering (Tangential)",

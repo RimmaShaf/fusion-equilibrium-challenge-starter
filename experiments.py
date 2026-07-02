@@ -1,12 +1,18 @@
 """
 Fusion Equilibrium Challenge - Baseline Model Experiments
 
-End-to-end demo: load DIII-D training shots from the Hugging Face Hub, train models
-to predict plasma shape (2D flux maps) from coil currents and Thomson scattering,
-evaluate and plot results.
+End-to-end demo: load DIII-D training shots (from the Hugging Face Hub *or* a fully
+downloaded local copy), train models to predict plasma shape (the 2D flux map
+`efit_psirz`) plus the scored EFIT scalar labels (`efit_beta_n`, `efit_li`, `efit_q95`,
+`efit_r_axis`, `efit_z_axis`, and the EFIT-derived x-point gap `magnetics_dsep`) from
+coil currents and Thomson scattering, then evaluate and plot results.
 
 Training data: https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge
-(config `diii_d_train`). Demo parquet shots in `parquet_data/` are for dFL only.
+(config `diii_d_train`). Demo parquet shots in `parquet_data/` are for the dFL only.
+
+The `--source local` switch reads the same data from a downloaded copy laid out like the
+Hub repo (`<local-data-dir>/data/<config>/*.parquet`) — useful offline or when you have
+already pulled the full dataset.
 
 Usage:
     python experiments.py --quick              # 3 shots, fast demo
@@ -14,6 +20,8 @@ Usage:
     python experiments.py --include-thomson    # add Thomson scattering features
     python experiments.py --skip-sklearn       # only run PyTorch models
     python experiments.py --skip-pytorch       # only run sklearn models
+    python experiments.py --source local       # load from the local downloaded dataset
+    python experiments.py --source local --local-data-dir /path/to/hf_dataset
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
@@ -52,11 +61,18 @@ REPO_ROOT = Path(__file__).resolve().parent
 HF_REPO_ID = "Sophelio/fusion-equilibrium-challenge"
 HF_TRAIN_CONFIG = "diii_d_train"
 
+# Fully downloaded copy of the dataset, laid out exactly like the Hub repo:
+#   <DEFAULT_LOCAL_DATA_DIR>/data/<config>/*.parquet
+# Used by `--source local`. Defaults to the sibling checkout next to this repo.
+DEFAULT_LOCAL_DATA_DIR = REPO_ROOT.parent / "downloaded_huggingface" / "hf_dataset"
+
 
 @dataclass
 class ExperimentConfig:
     hf_repo_id: str = HF_REPO_ID
     hf_config: str = HF_TRAIN_CONFIG
+    data_source: str = "hf"  # "hf" (stream from the Hub) or "local" (downloaded parquet)
+    local_data_dir: Path = field(default_factory=lambda: DEFAULT_LOCAL_DATA_DIR)
     n_shots: int = 10
     n_pca_components: int = 50
     test_size: float = 0.2
@@ -86,16 +102,30 @@ D3D_MAGNETICS_SIGNALS = [
     "plasma_current",
 ]
 
+# EFIT scalar labels scored alongside the flux map. One value per `efit_times` step.
+# Present in `diii_d_train`, withheld on the test splits (same as `efit_psirz`).
+# `magnetics_dsep` (the x-point gap) is EFIT-derived — a prediction target, not an input.
+# It is only defined when the plasma has an active x-point; limited/startup frames are
+# undefined and show up as NaN or a -1.0 gap sentinel (mask those before training/scoring).
+EFIT_SCALAR_TARGETS = [
+    "efit_beta_n", "efit_li", "efit_q95", "efit_r_axis", "efit_z_axis", "magnetics_dsep",
+]
+DSEP_GAP_SENTINEL = -1.0
+
 
 # ---------------------------------------------------------------------------
 # 3. Data loading (Hugging Face Hub)
 # ---------------------------------------------------------------------------
 
 def _as_psirz_stack(psirz_raw) -> np.ndarray:
-    """Normalize efit_psirz to (T, 65, 65) whether from HF arrays or nested lists."""
-    psirz = np.asarray(psirz_raw, dtype=np.float32)
-    if psirz.ndim == 3:
-        return psirz
+    """Normalize efit_psirz to (T, 65, 65) whether from HF arrays, nested lists, or
+    the object-array-of-object-arrays layout that pandas/pyarrow returns for parquet."""
+    try:
+        psirz = np.asarray(psirz_raw, dtype=np.float32)
+        if psirz.ndim == 3:
+            return psirz
+    except (ValueError, TypeError):
+        pass
     return np.stack(
         [np.stack([np.asarray(r, dtype=np.float32) for r in grid]) for grid in psirz_raw]
     )
@@ -143,6 +173,21 @@ def load_shot_from_hf_row(row: dict) -> dict:
         except Exception:
             pass
 
+    # EFIT scalar targets (present in train, withheld on test splits)
+    scalars: dict = {}
+    for name in EFIT_SCALAR_TARGETS:
+        if name not in row:
+            continue
+        try:
+            arr = np.asarray(row[name], dtype=np.float64).ravel()
+        except Exception:
+            continue
+        if name == "magnetics_dsep":
+            arr = arr.copy()
+            arr[arr == DSEP_GAP_SENTINEL] = np.nan  # -1.0 gap sentinel == undefined
+        scalars[name] = arr
+    shot["scalars"] = scalars
+
     return shot
 
 
@@ -173,6 +218,53 @@ def load_shots_from_hf(
     if not shots:
         raise RuntimeError(f"No shots loaded from {repo_id}/{config}")
     return shots
+
+
+def load_shots_from_local(
+    n_shots: int,
+    seed: int = 42,
+    local_data_dir: Path = DEFAULT_LOCAL_DATA_DIR,
+    config: str = HF_TRAIN_CONFIG,
+) -> list[dict]:
+    """Load a random sample of shots from a downloaded copy of the dataset.
+
+    Expects the Hub layout: ``<local_data_dir>/data/<config>/*.parquet`` (one shot per
+    file, one row per file). This is the same schema as the streaming Hub loader, so the
+    rest of the pipeline is identical.
+    """
+    data_dir = Path(local_data_dir) / "data" / config
+    files = sorted(data_dir.glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(
+            f"No parquet files found in {data_dir}. Point --local-data-dir at the "
+            f"downloaded dataset root (the folder that contains a 'data/' directory)."
+        )
+    print(f"  Local: {data_dir} ({len(files)} shots available)")
+
+    rng = np.random.RandomState(seed)
+    n_shots = min(n_shots, len(files))
+    chosen = sorted(rng.choice(len(files), size=n_shots, replace=False))
+
+    shots = []
+    for i, idx in enumerate(chosen):
+        row = pd.read_parquet(files[idx]).iloc[0]
+        shot = load_shot_from_hf_row(row)
+        shot["shot_index"] = i
+        print(f"  Loading shot {i + 1}/{n_shots}: {files[idx].name} "
+              f"({shot['source']}, T={len(shot['efit_times'])})")
+        shots.append(shot)
+    return shots
+
+
+def load_shots(config: ExperimentConfig) -> list[dict]:
+    """Dispatch to the Hugging Face or local loader based on ``config.data_source``."""
+    if config.data_source == "local":
+        return load_shots_from_local(
+            config.n_shots, config.random_state, config.local_data_dir, config.hf_config,
+        )
+    return load_shots_from_hf(
+        config.n_shots, config.random_state, config.hf_repo_id, config.hf_config,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,12 +326,18 @@ def interpolate_thomson_to_efit(shot: dict) -> Optional[np.ndarray]:
 
 def build_feature_matrix(
     shots: list[dict], include_thomson: bool = False
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Build X (features) and Y (targets) from all shots.
-    Returns X (total_T, n_features), Y (total_T, 65, 65), shot_ids (total_T,).
+    Build X (features), Y (flux-map targets) and S (EFIT scalar targets) from all shots.
+
+    Returns:
+        X        (total_T, n_features)
+        Y        (total_T, 65, 65)          — flux map
+        S        (total_T, n_scalars)       — EFIT scalar targets (NaN where undefined)
+        shot_ids (total_T,)
     """
-    X_parts, Y_parts, id_parts = [], [], []
+    n_scalars = len(EFIT_SCALAR_TARGETS)
+    X_parts, Y_parts, S_parts, id_parts = [], [], [], []
 
     for shot in shots:
         mag_features = interpolate_magnetics_to_efit(shot)  # (T, 21)
@@ -253,22 +351,35 @@ def build_feature_matrix(
         psirz = shot["efit_psirz"]  # (T, 65, 65)
         n_times = min(len(features), len(psirz))
 
+        # EFIT scalars are already on the efit_times base; NaN-fill any that are absent
+        scal = np.full((n_times, n_scalars), np.nan, dtype=np.float32)
+        shot_scalars = shot.get("scalars", {})
+        for j, name in enumerate(EFIT_SCALAR_TARGETS):
+            arr = shot_scalars.get(name)
+            if arr is not None:
+                m = min(n_times, len(arr))
+                scal[:m, j] = arr[:m]
+
         X_parts.append(features[:n_times])
         Y_parts.append(psirz[:n_times])
+        S_parts.append(scal)
         id_parts.append(np.full(n_times, shot["shot_index"], dtype=np.int32))
 
     X = np.concatenate(X_parts, axis=0)
     Y = np.concatenate(Y_parts, axis=0)
+    S = np.concatenate(S_parts, axis=0)
     shot_ids = np.concatenate(id_parts, axis=0)
 
-    # Drop rows with NaN/Inf
+    # Drop rows where inputs or the flux map are non-finite. Scalar NaNs are kept — some
+    # scalars (e.g. dsep on limited frames) are legitimately undefined and are masked
+    # per-scalar at fit/score time instead of dropping the whole row.
     valid = np.isfinite(X).all(axis=1) & np.isfinite(Y.reshape(len(Y), -1)).all(axis=1)
     if not valid.all():
         n_dropped = (~valid).sum()
-        print(f"  Dropped {n_dropped} time slices with NaN/Inf values")
-        X, Y, shot_ids = X[valid], Y[valid], shot_ids[valid]
+        print(f"  Dropped {n_dropped} time slices with NaN/Inf inputs or flux maps")
+        X, Y, S, shot_ids = X[valid], Y[valid], S[valid], shot_ids[valid]
 
-    return X, Y, shot_ids
+    return X, Y, S, shot_ids
 
 
 # ---------------------------------------------------------------------------
@@ -313,17 +424,16 @@ class FusionDataPipeline:
         self.config = config
 
     def prepare(self) -> dict:
-        print("\n=== Loading Data (Hugging Face) ===")
-        shots = load_shots_from_hf(
-            self.config.n_shots,
-            self.config.random_state,
-            self.config.hf_repo_id,
-            self.config.hf_config,
-        )
+        src_label = "local download" if self.config.data_source == "local" else "Hugging Face"
+        print(f"\n=== Loading Data ({src_label}) ===")
+        shots = load_shots(self.config)
 
         print("\n=== Building Feature Matrix ===")
-        X, Y, shot_ids = build_feature_matrix(shots, self.config.include_thomson)
-        print(f"  X: {X.shape}, Y: {Y.shape}, unique shots: {len(np.unique(shot_ids))}")
+        X, Y, S, shot_ids = build_feature_matrix(shots, self.config.include_thomson)
+        n_scalar_valid = int(np.isfinite(S).any(axis=0).sum())
+        print(f"  X: {X.shape}, Y: {Y.shape}, S: {S.shape} "
+              f"({n_scalar_valid}/{S.shape[1]} scalar targets present), "
+              f"unique shots: {len(np.unique(shot_ids))}")
 
         # Split by shot to avoid data leakage
         print("\n=== Splitting Data (by shot) ===")
@@ -342,9 +452,9 @@ class FusionDataPipeline:
         val_mask = np.isin(shot_ids, list(val_shots))
         test_mask = np.isin(shot_ids, list(test_shots))
 
-        X_train, Y_train = X[train_mask], Y[train_mask]
-        X_val, Y_val = X[val_mask], Y[val_mask]
-        X_test, Y_test = X[test_mask], Y[test_mask]
+        X_train, Y_train, S_train = X[train_mask], Y[train_mask], S[train_mask]
+        X_val, Y_val, S_val = X[val_mask], Y[val_mask], S[val_mask]
+        X_test, Y_test, S_test = X[test_mask], Y[test_mask], S[test_mask]
         print(f"  Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
 
         # Feature scaling
@@ -369,6 +479,8 @@ class FusionDataPipeline:
             "X_train": X_train, "X_val": X_val, "X_test": X_test,
             "Y_train": Y_train, "Y_val": Y_val, "Y_test": Y_test,
             "Y_train_pca": Y_train_pca, "Y_val_pca": Y_val_pca, "Y_test_pca": Y_test_pca,
+            "S_train": S_train, "S_val": S_val, "S_test": S_test,
+            "scalar_names": list(EFIT_SCALAR_TARGETS),
             "scaler": scaler, "target_pca": target_pca,
             "n_features": X_train.shape[1],
         }
@@ -407,6 +519,44 @@ def get_sklearn_models() -> list[SklearnModel]:
 
 
 # ---------------------------------------------------------------------------
+# 7c. Models - EFIT scalar targets
+# ---------------------------------------------------------------------------
+
+class ScalarTargetModels:
+    """Predict the scored EFIT scalar labels from the (scaled) input features.
+
+    Each scalar gets its own regressor so we can mask undefined frames independently
+    (e.g. `dsep` is NaN on limited/startup frames). Scalars that are entirely absent
+    from the loaded split (e.g. on a test config) are simply skipped.
+    """
+
+    def __init__(self, names: list[str], min_valid: int = 10):
+        self.names = names
+        self.min_valid = min_valid
+        self.models: dict[str, object] = {}
+
+    def fit(self, X: np.ndarray, S: np.ndarray) -> "ScalarTargetModels":
+        for j, name in enumerate(self.names):
+            y = S[:, j]
+            mask = np.isfinite(y)
+            if int(mask.sum()) < self.min_valid:
+                self.models[name] = None
+                continue
+            model = RidgeCV(alphas=np.logspace(-3, 3, 10))
+            model.fit(X[mask], y[mask])
+            self.models[name] = model
+        return self
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        out = np.full((len(X), len(self.names)), np.nan, dtype=np.float32)
+        for j, name in enumerate(self.names):
+            model = self.models.get(name)
+            if model is not None:
+                out[:, j] = model.predict(X).astype(np.float32)
+        return out
+
+
+# ---------------------------------------------------------------------------
 # 8. Evaluation metrics
 # ---------------------------------------------------------------------------
 
@@ -441,6 +591,25 @@ def compute_metrics(Y_true: np.ndarray, Y_pred: np.ndarray) -> dict:
         "Relative Error": rel_error,
         "residual_map": residual_map,
     }
+
+
+def compute_scalar_metrics(
+    S_true: np.ndarray, S_pred: np.ndarray, names: list[str]
+) -> dict:
+    """Per-scalar R2 / MAE, masking frames where the label is undefined (NaN)."""
+    results: dict[str, dict] = {}
+    for j, name in enumerate(names):
+        yt, yp = S_true[:, j], S_pred[:, j]
+        mask = np.isfinite(yt) & np.isfinite(yp)
+        if int(mask.sum()) < 2:
+            results[name] = {"R2": None, "MAE": None, "n": int(mask.sum())}
+            continue
+        results[name] = {
+            "R2": float(r2_score(yt[mask], yp[mask])),
+            "MAE": float(mean_absolute_error(yt[mask], yp[mask])),
+            "n": int(mask.sum()),
+        }
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +712,31 @@ def plot_model_comparison(results: dict, output_path: Path):
                     f"{val:.4f}", ha="center", va="bottom", fontsize=8)
 
     plt.suptitle("Model Comparison", fontsize=14)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+def plot_scalar_r2(scalar_results: dict, output_path: Path):
+    """Bar chart of per-scalar R2 for the EFIT scalar-target predictions."""
+    names = [n for n, m in scalar_results.items() if m.get("R2") is not None]
+    if not names:
+        return
+    vals = [scalar_results[n]["R2"] for n in names]
+
+    fig, ax = plt.subplots(figsize=(max(6, 1.5 * len(names)), 5))
+    colors = plt.cm.Set2(np.linspace(0, 1, len(names)))
+    bars = ax.bar(range(len(names)), vals, color=colors)
+    ax.axhline(y=0.0, color="k", linewidth=0.8)
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels(names, rotation=45, ha="right", fontsize=9)
+    ax.set_ylabel("R²")
+    ax.set_title("EFIT Scalar Targets — R² (Ridge)")
+    ax.grid(True, axis="y", alpha=0.3)
+    for bar, val in zip(bars, vals):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                f"{val:.3f}", ha="center",
+                va="bottom" if val >= 0 else "top", fontsize=8)
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
@@ -682,6 +876,34 @@ def run_all_experiments(config: ExperimentConfig, skip_sklearn=False, skip_pytor
                 "\n=== Skipping PyTorch models (torch not installed) ===\n"
                 "  Install with: uv sync --group pytorch   OR   pip install -r requirements-pytorch.txt"
             )
+        except Exception as exc:  # keep sklearn/scalar results even if torch fails at runtime
+            print(
+                f"\n=== PyTorch models failed at runtime, continuing without them ===\n"
+                f"  {type(exc).__name__}: {exc}\n"
+                "  (Common cause: a NumPy/torch ABI mismatch in the environment — e.g. NumPy 2.x\n"
+                "   with a torch built for NumPy 1.x. Use this repo's env: 'uv sync --group pytorch'.)"
+            )
+
+    # --- EFIT scalar targets ---
+    scalar_results = {}
+    if np.isfinite(data["S_train"]).any():
+        print("\n=== Predicting EFIT scalar targets (Ridge) ===")
+        scal_model = ScalarTargetModels(data["scalar_names"])
+        scal_model.fit(data["X_train"], data["S_train"])
+        S_pred = scal_model.predict(data["X_test"])
+        scalar_results = compute_scalar_metrics(data["S_test"], S_pred, data["scalar_names"])
+
+        print(f"  {'Scalar':<18} {'R2':>10} {'MAE':>12} {'n':>8}")
+        print("  " + "-" * 50)
+        for name, m in scalar_results.items():
+            r2_str = f"{m['R2']:.4f}" if m["R2"] is not None else "N/A"
+            mae_str = f"{m['MAE']:.4g}" if m["MAE"] is not None else "N/A"
+            print(f"  {name:<18} {r2_str:>10} {mae_str:>12} {m['n']:>8}")
+
+        plot_scalar_r2(scalar_results, config.output_dir / "scalar_r2.png")
+        print("  Saved: scalar_r2.png")
+    else:
+        print("\n=== Skipping EFIT scalar targets (none present in this split) ===")
 
     # --- Summary ---
     if all_results:
@@ -717,9 +939,18 @@ if __name__ == "__main__":
     parser.add_argument("--skip-sklearn", action="store_true", help="Skip sklearn models")
     parser.add_argument("--skip-pytorch", action="store_true", help="Skip PyTorch models")
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
+    parser.add_argument("--source", default="hf", choices=["hf", "local"],
+                        help="Data source: 'hf' streams from the Hub, 'local' reads downloaded parquet")
+    parser.add_argument("--local-data-dir", default=str(DEFAULT_LOCAL_DATA_DIR),
+                        help="Root of the downloaded dataset (contains a 'data/' folder). Used with --source local")
+    parser.add_argument("--config", default=HF_TRAIN_CONFIG,
+                        help="Dataset config / split folder to load (e.g. diii_d_train)")
     args = parser.parse_args()
 
     config = ExperimentConfig(
+        hf_config=args.config,
+        data_source=args.source,
+        local_data_dir=Path(args.local_data_dir),
         n_shots=args.n_shots,
         n_pca_components=args.n_pca,
         include_thomson=args.include_thomson,
@@ -734,7 +965,10 @@ if __name__ == "__main__":
         config.epochs = 10
 
     print("Fusion Equilibrium Challenge - Baseline Experiments")
-    print(f"  Data: {config.hf_repo_id} / {config.hf_config}")
+    if config.data_source == "local":
+        print(f"  Data: local {config.local_data_dir} / {config.hf_config}")
+    else:
+        print(f"  Data: {config.hf_repo_id} / {config.hf_config}")
     print(f"  Shots: {config.n_shots}")
     print(f"  PCA components: {config.n_pca_components}")
     print(f"  Thomson: {config.include_thomson}")
