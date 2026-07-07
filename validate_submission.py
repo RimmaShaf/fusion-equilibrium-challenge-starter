@@ -6,7 +6,7 @@ Checks that a submission .npz has the right STRUCTURE before you upload it to Co
 NOT score (the scorer is held by the organizers and runs on the platform). Catching a malformed
 file here saves you a wasted submission slot.
 
-A submission predicts the flux map, five composite scalars, and a separately-scored dsep per shot
+A submission predicts the flux map and six composite scalars (the sixth is dsep) per shot
 (grouped per shot; see README →
 "Output & Submission Format"). The LCFS is NOT submitted — the scorer derives it from the flux
 map. For a config this streams the public-test inputs from Hugging Face (no ground truth needed)
@@ -14,7 +14,8 @@ and verifies, for every shot in stream order, with T = number of `efit_times`:
   - `shot_XXXX_psirz`  present, shape `(T, H, W)` in the machine's native grid (both dense 65×65:
     DIII-D 65×65, MAST 65×65), floating dtype, and (DIII-D only) no NaN/Inf since its GT is finite,
   - `shot_XXXX_<scalar>` present for each of betaN, li, q95, R_axis, Z_axis, shape `(T,)`, floating,
-  - `shot_XXXX_dsep` present, shape `(T,)`, floating — the x-point gap, scored separately as R²_dsep.
+  - `shot_XXXX_dsep` present, shape `(T,)`, floating — the x-point gap, the sixth composite scalar
+    (also reported on its own as R²_dsep).
 
 Usage:
     python validate_submission.py submission/diii_d_public_test.npz --config diii_d_public_test
@@ -32,8 +33,8 @@ import numpy as np
 REPO_ID = "Sophelio/fusion-equilibrium-challenge"
 # Native flux grid per machine (rows = Z, cols = R).
 GRID = {"DIII-D": (65, 65), "MAST": (65, 65)}
-SCALARS = ["betaN", "li", "q95", "R_axis", "Z_axis"]  # composite R2_scalars; one (T,) key each
-DSEP = "dsep"  # ALSO a scored target, but scored separately as R2_dsep (not part of the composite)
+SCALARS = ["betaN", "li", "q95", "R_axis", "Z_axis"]  # five of the six composite scalars
+DSEP = "dsep"  # the sixth composite scalar in R2_scalars (also reported on its own as R2_dsep)
 # config -> (split, machine). One public-test config = one machine.
 CONFIG_INFO = {
     "diii_d_public_test": ("public_test", "DIII-D"),
