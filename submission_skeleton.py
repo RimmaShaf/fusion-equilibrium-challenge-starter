@@ -13,13 +13,14 @@ What you submit (per shot, at each `efit_times` timestamp), grouped per shot in 
     shot_0000_q95      (T,)        edge safety factor
     shot_0000_R_axis   (T,)        magnetic-axis R (meters)
     shot_0000_Z_axis   (T,)        magnetic-axis Z (meters)
-    shot_0000_dsep     (T,)        x-point gap (scored separately as R2_dsep — see below)
+    shot_0000_dsep     (T,)        x-point gap (the SIXTH composite scalar — see below)
 
 You do NOT submit the LCFS contour: the scorer extracts both the true and the predicted LCFS
 from the flux maps (a contour of psi at the boundary), so a good psi is what drives D_LCFS.
 
-The leaderboard score is the composite  S = 0.6*R2_psi + 0.25*R2_scalars + 0.15*(1 - D_LCFS).
-`dsep` is scored as an additional `R2_dsep`, reported separately — it does NOT enter the composite.
+The leaderboard score is the composite  S = 0.6*R2_psi + 0.25*R2_scalars + 0.15*(1 - D_LCFS),
+where R2_scalars is the mean over SIX scalars — betaN, li, q95, R_axis, Z_axis, and dsep. So
+`dsep` counts toward the composite; its own `R2_dsep` is also reported as a diagnostic.
 To make a real submission, replace `your_model_predict()` with your trained model. The placeholder
 here emits zeros of the correct shape (a valid-but-useless submission) so you can confirm the
 plumbing/shapes before plugging in a model, then validate with `validate_submission.py`.
@@ -41,10 +42,11 @@ TEST_CONFIGS = [("diii_d_public_test", "public_test"), ("mast_public_test", "pub
 # collapsed to a dense 65x65 in the corrected dataset, so there is no central NaN region.
 GRID = {"DIII-D": (65, 65), "MAST": (65, 65)}
 # Each scalar is submitted under its own per-shot key (named, not positional, to make column
-# mix-ups impossible). R_axis / Z_axis are in meters. These five are the composite `R2_scalars`.
+# mix-ups impossible). R_axis / Z_axis are in meters. These five plus `dsep` (below) are the six
+# scalars averaged into the composite `R2_scalars`.
 SCALARS = ["betaN", "li", "q95", "R_axis", "Z_axis"]
-# `dsep` (the x-point gap) is ALSO a scored target, but scored separately as `R2_dsep` — it is
-# NOT part of the composite. Submit it under its own per-shot key, one (T,) array like a scalar.
+# `dsep` (the x-point gap) is the SIXTH composite scalar: it is averaged into `R2_scalars` (and
+# its own `R2_dsep` is also reported). Submit it under its own per-shot key, one (T,) array.
 DSEP = "dsep"
 
 
@@ -60,8 +62,8 @@ def your_model_predict(row: dict, source: str) -> dict:
       - `thomson_*` = kinetic profiles (electron temperature & density).
       - `efit_times` (+ MAST: `efit_grid_R/Z`).
     The targets are withheld in test configs. `magnetics_dsep` (the x-point gap) is EFIT-DERIVED
-    (computed from the target equilibrium), so it is a prediction TARGET too — scored separately as
-    `R2_dsep` (not part of the composite). Predict it like a scalar; never read it as an input."""
+    (computed from the target equilibrium), so it is a prediction TARGET too — the sixth composite
+    scalar (its own `R2_dsep` is also reported). Predict it like a scalar; never read it as an input."""
     T = len(np.asarray(row["efit_times"]))
     H, W = GRID[source]
     out = {"psirz": np.zeros((T, H, W), dtype=np.float32)}      # placeholder baseline
@@ -85,7 +87,7 @@ def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> 
 
         assert out["psirz"].shape == (T, H, W), f"{config} shot {i}: psirz {out['psirz'].shape} != {(T, H, W)}"
         preds[f"shot_{i:04d}_psirz"] = out["psirz"].astype(np.float32)
-        for name in (*SCALARS, DSEP):   # 5 composite scalars + dsep (scored separately)
+        for name in (*SCALARS, DSEP):   # the six composite scalars (betaN..Z_axis + dsep)
             arr = np.asarray(out[name])
             assert arr.shape == (T,), f"{config} shot {i}: {name} {arr.shape} != ({T},)"
             preds[f"shot_{i:04d}_{name}"] = arr.astype(np.float32)
@@ -120,14 +122,14 @@ def main() -> None:
     manifest = {
         "harmonization_layer": args.harmonization,
         "scalars": SCALARS,
-        "dsep": DSEP,  # scored separately as R2_dsep (not part of the composite R2_scalars)
+        "dsep": DSEP,  # the sixth composite scalar in R2_scalars (also reported as R2_dsep)
         "configs": written,
     }
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     print(f"\nWrote {', '.join(written)} + manifest.json to {args.out.resolve()}")
     print("Each .npz: per shot, key shot_XXXX_psirz (T,H,W) + one (T,) key per scalar "
-          f"({', '.join(SCALARS)}) + shot_XXXX_{DSEP} (scored separately as R2_dsep).")
+          f"({', '.join(SCALARS)}) + shot_XXXX_{DSEP} (the sixth composite scalar; also R2_dsep).")
     print("Next: python validate_submission.py <config>.npz --config <config>")
 
 
