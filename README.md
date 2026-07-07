@@ -154,7 +154,8 @@ model has **never seen** (different size, shape, and coil set)?
 > ⚠️ **`magnetics_dsep` is a prediction target, not an input.** It is **EFIT-derived** — computed
 > *from the target equilibrium itself* — so it encodes x-point/divertor geometry straight from the
 > label. That makes it a **target**, not a blind input: it is **withheld on the test splits**
-> (alongside `efit_psirz` and the scalar labels) and **scored separately as `R²_dsep`**. Never read
+> (alongside `efit_psirz` and the scalar labels) and scored as the **sixth composite scalar** (its
+> own `R²_dsep` is also reported). Never read
 > `dsep` as a model input — predict it. (`magnetics_plasma_current` (Ip) *is* an allowed input: a
 > single legitimate global magnetic scalar, not label-derived.)
 
@@ -189,8 +190,8 @@ Signal names are prefixed with the source:
 ## 🎯 The Target: What you are predicting
 
 In physics terms, you are predicting the **Magnetic Equilibrium** — the 2D poloidal flux map
-$\psi(R,Z)$ plus **five scalar parameters** ($\beta_N$, $l_i$, $q_{95}$, $R_\text{axis}$,
-$Z_\text{axis}$). The plasma boundary (**LCFS**) is also scored, but you don't submit it
+$\psi(R,Z)$ plus **six scalar parameters** ($\beta_N$, $l_i$, $q_{95}$, $R_\text{axis}$,
+$Z_\text{axis}$, and the x-point gap `dsep`). The plasma boundary (**LCFS**) is also scored, but you don't submit it
 separately — the scorer extracts it from your flux map. See **Output & Submission Format** for
 exactly what to submit and how it's scored.
 
@@ -228,8 +229,8 @@ Reconstructions often include electrical currents present in major conductors su
 You submit **two things** for every shot, at each provided `efit_times` timestamp:
 
 1. **Flux map** `efit_psirz` — the 2D poloidal flux ψ(R,Z) in the machine's native grid.
-2. **Five scalars** — `betaN, li, q95, R_axis, Z_axis`: normalized beta, internal inductance,
-   edge safety factor q₉₅, and the magnetic-axis coordinates (in **meters**).
+2. **Six scalars** — `betaN, li, q95, R_axis, Z_axis, dsep`: normalized beta, internal inductance,
+   edge safety factor q₉₅, the magnetic-axis coordinates (in **meters**), and the x-point gap.
 
 You do **not** submit the LCFS contour. The scorer extracts the boundary from the flux map (a
 contour of ψ at the boundary value) for *both* your prediction and the ground truth, so getting ψ
@@ -243,7 +244,7 @@ config). Each scalar is its own named key — no positional column order to get 
 | ------------------------------------------- | ----------------- | -------------------------------------------------------------- |
 | `_psirz`                                    | `(T, H, W)` float | Both machines dense `H,W = 65,65` (DIII-D `65,65`; MAST `65,65`) |
 | `_betaN` `_li` `_q95` `_R_axis` `_Z_axis`   | `(T,)` float each | one scalar per key; `R_axis`/`Z_axis` in meters               |
-| `_dsep`                                     | `(T,)` float      | x-point gap; **scored separately as `R²_dsep`**, not in the composite |
+| `_dsep`                                     | `(T,)` float      | x-point gap; the **sixth composite scalar** (also reported on its own as `R²_dsep`) |
 
 
 So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_betaN`, `shot_0000_li`,
@@ -272,13 +273,14 @@ S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)      
 | Term         | What it measures                                                                              |
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `R²_ψ`       | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
-| `R²_scalars` | Mean of the per-scalar R² across `betaN, li, q95, R_axis, Z_axis`. Clipped to ≥ 0.            |
+| `R²_scalars` | Mean of the per-scalar R² across the six scalars `betaN, li, q95, R_axis, Z_axis, dsep`. Clipped to ≥ 0. |
 | `D_LCFS`     | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
 
-**`dsep` is scored separately as `R²_dsep`** — the R² of your predicted x-point gap, computed only
-over frames where the *true* `dsep` is finite (NaN / `−1.0` sentinel frames are excluded). It is
-**reported alongside** the composite but **not folded into `S_model`**. You still submit a `dsep`
-prediction per shot (see **Output & Submission Format**).
+**`dsep` is the sixth scalar in `R²_scalars`**, so it counts toward `S_model`. Its R² is computed
+only over frames where the *true* `dsep` is defined (NaN / `−1.0` sentinel frames are excluded from
+that term); on MAST that's ~60% of frames, on DIII-D all of them. Its own `R²_dsep` is **also
+reported** as a diagnostic (and is honorable-mention eligible). You submit a `dsep` prediction per
+shot (see **Output & Submission Format**).
 
 **Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
@@ -293,7 +295,7 @@ python validate_submission.py submission/diii_d_public_test.npz --config diii_d_
 python validate_submission.py submission/mast_public_test.npz  --config mast_public_test
 ```
 
-It confirms the per-shot keys (`_psirz` + the five scalar keys + `_dsep`), shot order/count, per-shot `T`,
+It confirms the per-shot keys (`_psirz` + the six scalar keys incl. `_dsep`), shot order/count, per-shot `T`,
 native grid, and dtypes against the streamed public-test inputs — the errors that otherwise only
 surface after you submit.
 
