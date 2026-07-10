@@ -301,16 +301,21 @@ surface after you submit.
 
 ## 📮 How to Submit
 
-> **Placeholder — organizers to finalize the Codabench URL and dates below.**
+Submit on Codabench: **https://www.codabench.org/competitions/17456/** (register first — the
+"Register" button on the competition page).
 
 1. **Generate** predictions in the proposed format: `python submission_skeleton.py --max-shots 0`
    (after swapping in your model). Produces `submission/diii_d_public_test.npz` and
    `submission/mast_public_test.npz`.
 2. **Validate** each file with `validate_submission.py` (above) — a malformed `.npz` is the most
    common cause of a failed submission.
-3. **Upload** to the challenge on **Codabench**: **`<CODABENCH COMPETITION URL — TBD>`**. The
-   platform scores your predictions against the held-out ground truth and updates the leaderboard.
-4. **Deadline:** **`<DATE — TBD>`**. **Per-team submission limit:** **`<TBD>`**.
+3. **Zip** the two `.npz` files plus a `manifest.json` (see `submission_skeleton.py`) at the root of
+   the archive, and **upload the zip** on the competition's **Submit** tab. The platform scores your
+   predictions against the held-out ground truth and updates the leaderboard. You enter both
+   challenges with one submission — **Challenge 1 (DIII-D)** needs only the DIII-D file; **Challenge 2
+   (cross-machine `G_ratio`)** additionally needs the MAST file.
+4. **Development phase deadline:** **October 18, 2026**. **Submission limits:** **5 per day, 100
+   total** per participant during Development (the blind Final phase, Oct 19–26, allows 3 total).
 
 By submitting you agree to the official competition rules and the dataset terms (see the dataset
 card on Hugging Face and the Disclaimer below). Starter-kit code is MIT-licensed (`LICENSE`).
