@@ -10,21 +10,23 @@ Matthew Waller1, Craig Michoski1, Tapan Ganatma Nakkina1, Brian Sammuli2, Willia
 
 This repository is the **public starter kit** for the Fusion Equilibrium Challenge. It gives you:
 
-- **Sample parquet shots** (2 DIII-D + 2 MAST) for offline exploration and dFL visualization
+- **Sample parquet shots** (3 DIII-D + 3 MAST) for offline exploration and dFL visualization
 - **Full training data** on Hugging Face: [`Sophelio/fusion-equilibrium-challenge`](https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge)
 - **Baseline models** in `experiments.py` that load from Hugging Face (same data hackathoners use), and can also read a fully **downloaded** copy of the dataset with `--source local`
 
-> **What you predict:** the primary target is the 2-D flux map `efit_psirz`. Alongside it,
-> the corrected dataset ships **scored EFIT scalar labels** — `efit_beta_n`, `efit_li`,
-> `efit_q95`, `efit_r_axis`, `efit_z_axis` — plus the EFIT-derived x-point gap
-> `magnetics_dsep`. All of these are present in `diii_d_train` and **withheld on the test
-> splits**. `experiments.py` predicts and scores the scalars alongside the flux map.
+> **What you predict (metric v2):** the primary target is the 2-D flux map `efit_psirz`; you
+> submit it plus only **`q95` and `betaN`** — the two scalars a flux map cannot contain. The
+> training data still ships all EFIT scalar labels (`efit_beta_n`, `efit_li`, `efit_q95`,
+> `efit_r_axis`, `efit_z_axis`, `magnetics_dsep`) as supervision, and all are **withheld on the
+> test splits** — but at scoring time the axis, shape, `li`, and `dsep` are *derived from your
+> submitted flux map* and scored for consistency against the same derivation on the true flux.
+> A good ψ is what earns them.
 
 
 
 ### Get the demo shots (Git LFS)
 
-The four files in `parquet_data/` are tracked with **Git LFS**. If you cloned without LFS
+The six files in `parquet_data/` are tracked with **Git LFS**. If you cloned without LFS
 installed you'll see ~130-byte pointer files instead of real data, and the dFL visualizer
 won't load. Install LFS once, then pull the blobs:
 
@@ -151,12 +153,12 @@ zero-shot* goal: equilibrium reconstruction from actuators + kinetic profiles al
 **MAST track** pushes it one step further — can the learned physics reconstruct a machine the
 model has **never seen** (different size, shape, and coil set)?
 
-> ⚠️ **`magnetics_dsep` is a prediction target, not an input.** It is **EFIT-derived** — computed
+> ⚠️ **`magnetics_dsep` is a target quantity, not an input.** It is **EFIT-derived** — computed
 > *from the target equilibrium itself* — so it encodes x-point/divertor geometry straight from the
-> label. That makes it a **target**, not a blind input: it is **withheld on the test splits**
-> (alongside `efit_psirz` and the scalar labels) and scored as the **sixth composite scalar** (its
-> own `R²_dsep` is also reported). Never read
-> `dsep` as a model input — predict it. (`magnetics_plasma_current` (Ip) *is* an allowed input: a
+> label. It is **withheld on the test splits** (alongside `efit_psirz` and the scalar labels), and
+> under metric v2 you don't submit it either: the scorer **derives `dsep` from your predicted flux
+> map** and scores its agreement with the same derivation on the true flux. Never read `dsep` as a
+> model input — make your ψ imply it. (`magnetics_plasma_current` (Ip) *is* an allowed input: a
 > single legitimate global magnetic scalar, not label-derived.)
 
 The data isn't *purely* zero-shot — Ip is a real global measurement you may use — but that's fine:
@@ -181,7 +183,7 @@ Signal names are prefixed with the source:
 - `DIII-D: F1A` - DIII-D F1A coil current
 - `MAST: P2L` - MAST P2L coil current
 
-**Training & evaluation data** live on Hugging Face (`diii_d_train`, `diii_d_public_test`, `mast_public_test`). The `parquet_data/` folder here holds four **demo shots only** for local inspection and the dFL visualizer.
+**Training & evaluation data** live on Hugging Face (`diii_d_train`, `diii_d_public_test`, `mast_public_test`). The `parquet_data/` folder here holds six **demo shots only** (3 DIII-D + 3 MAST) for local inspection and the dFL visualizer.
 
 ---
 
@@ -190,10 +192,11 @@ Signal names are prefixed with the source:
 ## 🎯 The Target: What you are predicting
 
 In physics terms, you are predicting the **Magnetic Equilibrium** — the 2D poloidal flux map
-$\psi(R,Z)$ plus **six scalar parameters** ($\beta_N$, $l_i$, $q_{95}$, $R_\text{axis}$,
-$Z_\text{axis}$, and the x-point gap `dsep`). The plasma boundary (**LCFS**) is also scored, but you don't submit it
-separately — the scorer extracts it from your flux map. See **Output & Submission Format** for
-exactly what to submit and how it's scored.
+$\psi(R,Z)$ plus the **two scalars a flux map cannot contain** ($q_{95}$ and $\beta_N$). The
+plasma boundary (**LCFS**), the magnetic axis, the shape scalars, $l_i$, and the x-point gap
+`dsep` are all scored too, but you don't submit any of them — the scorer derives each one from
+your flux map, the same way it derives them from the true flux map. See **Output & Submission
+Format** for exactly what to submit and how it's scored.
 
 ### `efit/` (The Ground Truth)
 
@@ -207,15 +210,17 @@ This data comes from a reconstruction code called "EFIT" (equilibrium fitting).
 | `efit_times` | (T,) | Timestamps (ms) for the target images. Align all inputs to these times. |
 | `efit_grid_R` / `efit_grid_Z` | (65,) | Physical R/Z (m) labelling the flux-map columns/rows (both machines). Kept on every split. |
 
-**Scored EFIT scalar targets** (one value per `efit_times` step; present in `train`, withheld on test):
+**EFIT scalar labels** (one value per `efit_times` step; present in `train`, withheld on test).
+Under metric v2 you *submit* only `q95` and `betaN`; the rest are training supervision — at
+scoring time the axis, shape, `li`, and `dsep` are derived from your submitted flux map:
 
 | Key | Shape | Description |
 |-----|-------|-------------|
-| `efit_beta_n` | (T,) | Normalised beta β_N |
-| `efit_li` | (T,) | Internal inductance ℓi |
-| `efit_q95` | (T,) | Safety factor at the 95% flux surface |
-| `efit_r_axis` / `efit_z_axis` | (T,) | Magnetic-axis R/Z (m) |
-| `magnetics_dsep` | (T,) | X-point gap (m); `>0` diverted, `<0` limited. EFIT-derived — a **prediction target**, despite the `magnetics_` prefix. Undefined on limited/startup frames (NaN or `-1.0` sentinel); mask those before training/scoring. |
+| `efit_q95` | (T,) | Safety factor at the 95% flux surface — **submitted scalar** |
+| `efit_beta_n` | (T,) | Normalised beta β_N — **submitted scalar** |
+| `efit_li` | (T,) | Internal inductance ℓi (supervision; derived from your ψ at scoring) |
+| `efit_r_axis` / `efit_z_axis` | (T,) | Magnetic-axis R/Z (m) (supervision; derived from your ψ at scoring) |
+| `magnetics_dsep` | (T,) | X-point gap (m); `>0` diverted, `<0` limited. EFIT-derived, despite the `magnetics_` prefix (supervision; derived from your ψ at scoring). Undefined on limited/startup frames (NaN or `-1.0` sentinel); mask those before training. |
 | *(bonus, train only)* `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | (T,) / (T, N) | Last-closed-flux-surface boundary contour + valid-point count. Provided as context. |
 
 Reconstructions often include electrical currents present in major conductors such as the vacuum vessel, which for simplicity are omitted here. 
@@ -229,28 +234,29 @@ Reconstructions often include electrical currents present in major conductors su
 You submit **two things** for every shot, at each provided `efit_times` timestamp:
 
 1. **Flux map** `efit_psirz` — the 2D poloidal flux ψ(R,Z) in the machine's native grid.
-2. **Six scalars** — `betaN, li, q95, R_axis, Z_axis, dsep`: normalized beta, internal inductance,
-   edge safety factor q₉₅, the magnetic-axis coordinates (in **meters**), and the x-point gap.
+2. **Two scalars** — `q95` and `betaN`: the edge safety factor and normalized beta, the only two
+   scalars that are not functions of ψ(R,Z) (they need `F(ψ)` / `p(ψ)`, which a flux map does not
+   contain).
 
-You do **not** submit the LCFS contour. The scorer extracts the boundary from the flux map (a
-contour of ψ at the boundary value) for *both* your prediction and the ground truth, so getting ψ
-right is what drives the `D_LCFS` term — there's nothing extra to upload.
+You do **not** submit anything else. The LCFS boundary, magnetic axis, elongation, triangularity,
+volume, `li`, and `dsep` are all **derived from your submitted flux map by the scorer**, with the
+same published functionals it applies to the ground-truth flux — so getting ψ right is what earns
+every geometry term, and there is no separate scalar head to tune (or to game).
 
 **Per-shot keys** (variable `T` = number of `efit_times`; grouped per shot in one `.npz` per
 config). Each scalar is its own named key — no positional column order to get wrong:
 
 
-| Key suffix                                  | Shape             | Notes                                                          |
-| ------------------------------------------- | ----------------- | -------------------------------------------------------------- |
-| `_psirz`                                    | `(T, H, W)` float | Both machines dense `H,W = 65,65` (DIII-D `65,65`; MAST `65,65`) |
-| `_betaN` `_li` `_q95` `_R_axis` `_Z_axis`   | `(T,)` float each | one scalar per key; `R_axis`/`Z_axis` in meters               |
-| `_dsep`                                     | `(T,)` float      | x-point gap; the **sixth composite scalar** (also reported on its own as `R²_dsep`) |
+| Key suffix        | Shape             | Notes                                                          |
+| ----------------- | ----------------- | -------------------------------------------------------------- |
+| `_psirz`          | `(T, H, W)` float | Both machines dense `H,W = 65,65` (DIII-D `65,65`; MAST `65,65`) |
+| `_q95` `_betaN`   | `(T,)` float each | the two submitted scalars, one per key                          |
 
 
-So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_betaN`, `shot_0000_li`,
-`shot_0000_q95`, `shot_0000_R_axis`, `shot_0000_Z_axis`, `shot_0000_dsep`, `shot_0001_psirz`, … in
-test-stream order. The skeleton writes a `manifest.json` alongside (per the rules, declaring which
-harmonization layer you used).
+So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_q95`, `shot_0000_betaN`,
+`shot_0001_psirz`, … in test-stream order. The skeleton writes a `manifest.json` alongside (with
+the optional harmonization-layer label — descriptive metadata; it is not scored and gates
+nothing).
 
 - **Align to** `efit_times` — one prediction per target timestamp. Resample your *inputs* to these
 times; never resample/interpolate the target grid itself.
@@ -267,20 +273,21 @@ ground-truth pixels, so any occasional non-finite frame is handled for you.
 The leaderboard score is the **composite intra-machine score** (Award #1):
 
 ```
-S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)        (clipped to [0, 1])
+S_model = 0.55 · R²_ψ  +  0.15 · R²_{q95,βN}  +  0.10 · (1 − D_LCFS)  +  0.20 · Consistency
 ```
 
-| Term         | What it measures                                                                              |
-| ------------ | --------------------------------------------------------------------------------------------- |
-| `R²_ψ`       | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
-| `R²_scalars` | Mean of the per-scalar R² across the six scalars `betaN, li, q95, R_axis, Z_axis, dsep`. Clipped to ≥ 0. |
-| `D_LCFS`     | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
+| Term           | What it measures                                                                              |
+| -------------- | --------------------------------------------------------------------------------------------- |
+| `R²_ψ`         | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
+| `R²_{q95,βN}`  | Mean pooled R² of the two submitted scalars vs the stored EFIT values. Clipped to ≥ 0.        |
+| `D_LCFS`       | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
+| `Consistency`  | Mean agreement of the eight ψ-derived scalars — `R_axis, Z_axis, κ, δ_top, δ_bot, V, li, dsep` — computed from your ψ vs the same derivation on the true ψ (pooled R² per scalar, clipped to ≥ 0, averaged). |
 
-**`dsep` is the sixth scalar in `R²_scalars`**, so it counts toward `S_model`. Its R² is computed
-only over frames where the *true* `dsep` is defined (NaN / `−1.0` sentinel frames are excluded from
-that term); on MAST that's ~60% of frames, on DIII-D all of them. Its own `R²_dsep` is **also
-reported** as a diagnostic (and is honorable-mention eligible). You submit a `dsep` prediction per
-shot (see **Output & Submission Format**).
+Each consistency scalar is scored only on frames where its ground-truth derivation is well-posed:
+the shape scalars and `dsep` on **diverted** frames only (a limited plasma's boundary is limiter
+contact, which no flux-only functional can see), `dsep` additionally where a clean x-point pair
+exists. A perfect flux map scores `D_LCFS = 0` and `Consistency = 1` **by construction** — the
+same code runs on both sides. Per-scalar breakdowns appear in your submission's detailed results.
 
 **Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
@@ -295,7 +302,7 @@ python validate_submission.py submission/diii_d_public_test.npz --config diii_d_
 python validate_submission.py submission/mast_public_test.npz  --config mast_public_test
 ```
 
-It confirms the per-shot keys (`_psirz` + the six scalar keys incl. `_dsep`), shot order/count, per-shot `T`,
+It confirms the per-shot keys (`_psirz`, `_q95`, `_betaN`), shot order/count, per-shot `T`,
 native grid, and dtypes against the streamed public-test inputs — the errors that otherwise only
 surface after you submit.
 
@@ -494,7 +501,7 @@ scalar (`dsep`, the x-point gap; see "Equilibrium-Derived Quantities").
 ### MAST columns
 
 MAST is **zero-shot: a test split only**, so its EFIT targets (`efit_psirz` and the
-scalars) are not distributed. The two MAST demo shots in `parquet_data/` do include a
+scalars) are not distributed. The three MAST demo shots in `parquet_data/` do include a
 `efit_psirz` (clean 65×65) purely for dFL visualization.
 
 | Display name | Parquet column | Shape | Notes |

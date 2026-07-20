@@ -31,7 +31,9 @@ A single fusion experiment ("shot") lasts a few seconds, but a LOT happens. We g
 ### Beyond the Flux Map: Scalar Targets
 
 The flux map is the *primary* target, but the corrected dataset also ships a handful of
-**scored EFIT scalar labels** — one number per timestep — that summarise the equilibrium:
+**EFIT scalar labels** — one number per timestep — that summarise the equilibrium. Under
+metric v2 you *submit* only `q95` and `betaN`; the others are training supervision (at scoring
+time the axis, shape, `li`, and `dsep` are derived from your submitted flux map):
 
 | Column | Plain English |
 |--------|---------------|
@@ -55,9 +57,11 @@ reports R² for each (see `results/scalar_r2.png`). Two practical notes:
   scalars sat on a slightly offset EFIT time base). All five share the same valid frames,
   so one `NaN` mask covers them. The starter code masks per-scalar automatically.
 
-A natural extension of the neural-net baselines is to add a small **scalar head** (an
-extra output branch trained against these labels) alongside the flux-map decoder, so one
-network predicts both the image and the summary scalars.
+A natural extension of the neural-net baselines is a small **scalar head** for the two
+*submitted* scalars (`q95`, `betaN`), plus — optionally — auxiliary heads trained on the other
+labels purely as extra supervision for the flux decoder. Remember: only `q95`/`betaN`
+predictions are scored as values; every geometric scalar is derived from your submitted flux
+map at scoring time, so auxiliary heads help only insofar as they make your ψ better.
 
 ### Why the Plots Might Look Different from the dFL Labeler
 
@@ -295,25 +299,31 @@ Some signals may have NaN or Inf values at certain timesteps. Check for and hand
 
 ## Evaluation Metrics
 
-**The official leaderboard score is a composite over all three targets** (flux map, LCFS, scalars):
+**The official leaderboard score is a composite** (metric v2 — flux map, the two predicted
+scalars, boundary, and flux-map consistency):
 
 ```
-S_model = 0.6 · R²_ψ  +  0.25 · R²_scalars  +  0.15 · (1 − D_LCFS)        (clipped to [0, 1])
+S_model = 0.55 · R²_ψ  +  0.15 · R²_{q95,βN}  +  0.10 · (1 − D_LCFS)  +  0.20 · Consistency
 ```
 
 | Term | What it measures | Good |
 |------|------------------|------|
 | **R²_ψ** | Global R² of the flux map over all (R,Z) points × timesteps × shots (clipped ≥ 0) | → 1 |
-| **R²_scalars** | Mean per-scalar R² across `betaN, li, q95, R_axis, Z_axis` (clipped ≥ 0) | → 1 |
+| **R²_{q95,βN}** | Mean pooled R² of the two *submitted* scalars, `q95` and `betaN` (clipped ≥ 0) | → 1 |
 | **D_LCFS** | Symmetric Hausdorff distance between the LCFS contours extracted from your ψ and the true ψ, normalized by mean true LCFS major radius (clipped ≤ 1). You don't submit a contour — predict a good ψ. | → 0 |
+| **Consistency** | Mean agreement of the eight ψ-derived scalars (`R_axis, Z_axis, κ, δ_top, δ_bot, V, li, dsep`): each is computed from *your* ψ and scored against the same computation on the *true* ψ (pooled R², clipped ≥ 0, averaged). You don't submit any of them — your flux map has to imply them. | → 1 |
 
 Cross-machine transfer (Award #2) is `G_ratio = S_model(MAST) / S_model(DIII-D)` among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. **R² can be negative** before
 clipping — that means the model is worse than predicting the mean, and it scores 0 in the composite.
 
-**`dsep` is scored separately as `R²_dsep`** — the R² of your predicted x-point gap over frames
-where the true `dsep` is finite (NaN / `−1.0` sentinel frames excluded). It is reported alongside
-the composite but does **not** enter `S_model`; you still submit a `dsep` prediction per shot.
+**Practical consequence of the Consistency term:** a scalar regression head can no longer earn
+points on the ψ-derived quantities — only `q95` and `βN` are predicted as values (they need
+`F(ψ)`/`p(ψ)`, which the flux map cannot contain). The training labels (`efit_li`,
+`efit_r_axis`, …, `magnetics_dsep`) remain useful as *auxiliary supervision* to shape your ψ
+decoder, but at scoring time everything geometric is read off your submitted flux map. Shape
+scalars and `dsep` are scored on diverted frames only, where their ground-truth derivation is
+well-posed; a perfect ψ scores `Consistency = 1` by construction.
 
 **Diagnostic metrics (not the score).** The baselines in `experiments.py` also print **MSE / MAE /
 SSIM** on the flux map. These are quick intuition proxies — SSIM in particular tells you whether the

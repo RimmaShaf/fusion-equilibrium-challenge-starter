@@ -8,19 +8,21 @@ printed shapes to see exactly what a submission looks like — no Git LFS / samp
 
 What you submit (per shot, at each `efit_times` timestamp), grouped per shot in one .npz per config:
     shot_0000_psirz    (T, H, W)   flux map   DIII-D 65x65 / MAST 65x65 (both dense, no NaN region)
-    shot_0000_betaN    (T,)        normalized beta
-    shot_0000_li       (T,)        internal inductance
     shot_0000_q95      (T,)        edge safety factor
-    shot_0000_R_axis   (T,)        magnetic-axis R (meters)
-    shot_0000_Z_axis   (T,)        magnetic-axis Z (meters)
-    shot_0000_dsep     (T,)        x-point gap (the SIXTH composite scalar — see below)
+    shot_0000_betaN    (T,)        normalized beta
 
-You do NOT submit the LCFS contour: the scorer extracts both the true and the predicted LCFS
-from the flux maps (a contour of psi at the boundary), so a good psi is what drives D_LCFS.
+That is the WHOLE contract (metric v2): the flux map plus the only two scalars a flux map cannot
+contain (q95 needs the toroidal field function F(psi), betaN needs the pressure profile p(psi)).
+Everything else — the LCFS boundary, magnetic axis (R_axis/Z_axis), elongation, triangularity,
+volume, internal inductance (li), and the x-point gap (dsep) — is DERIVED from your submitted
+flux map by the scorer, with the same published functionals it applies to the ground-truth flux.
+A scalar can only be earned by a psi that implies it: there is no separate scalar head to tune.
 
-The leaderboard score is the composite  S = 0.6*R2_psi + 0.25*R2_scalars + 0.15*(1 - D_LCFS),
-where R2_scalars is the mean over SIX scalars — betaN, li, q95, R_axis, Z_axis, and dsep. So
-`dsep` counts toward the composite; its own `R2_dsep` is also reported as a diagnostic.
+The leaderboard score is the composite
+    S = 0.55*R2_psi + 0.15*R2_{q95,betaN} + 0.10*(1 - D_LCFS) + 0.20*Consistency
+where Consistency is the mean agreement of the eight psi-derived scalars, f(psi_pred) vs
+f(psi_gt). A perfect flux map scores D_LCFS = 0 and Consistency = 1 by construction.
+
 To make a real submission, replace `your_model_predict()` with your trained model. The placeholder
 here emits zeros of the correct shape (a valid-but-useless submission) so you can confirm the
 plumbing/shapes before plugging in a model, then validate with `validate_submission.py`.
@@ -41,20 +43,16 @@ TEST_CONFIGS = [("diii_d_public_test", "public_test"), ("mast_public_test", "pub
 # grid — MAST's upstream EFIT 65x129 grid (65 real R columns interleaved with 64 empty ones) is
 # collapsed to a dense 65x65 in the corrected dataset, so there is no central NaN region.
 GRID = {"DIII-D": (65, 65), "MAST": (65, 65)}
-# Each scalar is submitted under its own per-shot key (named, not positional, to make column
-# mix-ups impossible). R_axis / Z_axis are in meters. These five plus `dsep` (below) are the six
-# scalars averaged into the composite `R2_scalars`.
-SCALARS = ["betaN", "li", "q95", "R_axis", "Z_axis"]
-# `dsep` (the x-point gap) is the SIXTH composite scalar: it is averaged into `R2_scalars` (and
-# its own `R2_dsep` is also reported). Submit it under its own per-shot key, one (T,) array.
-DSEP = "dsep"
+# The only two submitted scalars (metric v2), each under its own per-shot key (named, not
+# positional, to make column mix-ups impossible). Everything else is derived from your flux map.
+SCALARS = ["q95", "betaN"]
 
 
 def your_model_predict(row: dict, source: str) -> dict:
     """REPLACE ME. Return predictions for this shot, aligned to row['efit_times'], as a dict:
         {"psirz":  (T, H, W) flux map,
-         "betaN":  (T,), "li": (T,), "q95": (T,), "R_axis": (T,), "Z_axis": (T,),
-         "dsep":   (T,)}
+         "q95":    (T,),
+         "betaN":  (T,)}
 
     Inputs in `row` (NO magnetic-diagnostic array — that's the point of the challenge):
       - `magnetics_*` COIL CURRENTS = commanded actuators (F-coils, ECOILA/bcoil, MAST P-coils,
@@ -62,14 +60,14 @@ def your_model_predict(row: dict, source: str) -> dict:
       - `thomson_*` = kinetic profiles (electron temperature & density).
       - `efit_times` (+ MAST: `efit_grid_R/Z`).
     The targets are withheld in test configs. `magnetics_dsep` (the x-point gap) is EFIT-DERIVED
-    (computed from the target equilibrium), so it is a prediction TARGET too — the sixth composite
-    scalar (its own `R2_dsep` is also reported). Predict it like a scalar; never read it as an input."""
+    (computed from the target equilibrium) and is neither an input nor a submitted channel — the
+    scorer derives dsep from your flux map. Focus on making psi(R,Z) right; the geometry terms
+    (boundary, axis, shape, li, dsep) all follow from it."""
     T = len(np.asarray(row["efit_times"]))
     H, W = GRID[source]
     out = {"psirz": np.zeros((T, H, W), dtype=np.float32)}      # placeholder baseline
     for name in SCALARS:
         out[name] = np.zeros(T, dtype=np.float32)               # placeholder scalars
-    out[DSEP] = np.zeros(T, dtype=np.float32)                   # placeholder dsep (scored as R2_dsep)
     return out
 
 
@@ -87,7 +85,7 @@ def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> 
 
         assert out["psirz"].shape == (T, H, W), f"{config} shot {i}: psirz {out['psirz'].shape} != {(T, H, W)}"
         preds[f"shot_{i:04d}_psirz"] = out["psirz"].astype(np.float32)
-        for name in (*SCALARS, DSEP):   # the six composite scalars (betaN..Z_axis + dsep)
+        for name in SCALARS:   # the two submitted scalars
             arr = np.asarray(out[name])
             assert arr.shape == (T,), f"{config} shot {i}: {name} {arr.shape} != ({T},)"
             preds[f"shot_{i:04d}_{name}"] = arr.astype(np.float32)
@@ -100,7 +98,7 @@ def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> 
     np.savez_compressed(out_path, **preds)
     psh = preds.get("shot_0000_psirz", np.empty(0)).shape
     print(f"  {config}: {n} shots -> {out_path.name}  (e.g. shot_0000_psirz {psh}, "
-          f"shot_0000_betaN {preds.get('shot_0000_betaN', np.empty(0)).shape})")
+          f"shot_0000_q95 {preds.get('shot_0000_q95', np.empty(0)).shape})")
     return out_path
 
 
@@ -109,7 +107,8 @@ def main() -> None:
     ap.add_argument("--max-shots", type=int, default=5, help="cap shots per config (0 = all)")
     ap.add_argument("--out", type=Path, default=Path("submission"))
     ap.add_argument("--harmonization", default="default-H",
-                    help="harmonization-layer id recorded in manifest.json")
+                    help="harmonization-layer id recorded in manifest.json (an optional label — "
+                         "it is not scored and gates nothing)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -118,18 +117,17 @@ def main() -> None:
     for config, split in TEST_CONFIGS:
         written.append(build_submission(config, split, args.out, args.max_shots).name)
 
-    # Manifest declaring the harmonization layer (required by the rules).
+    # Manifest with the optional harmonization-layer label (descriptive metadata only).
     manifest = {
         "harmonization_layer": args.harmonization,
         "scalars": SCALARS,
-        "dsep": DSEP,  # the sixth composite scalar in R2_scalars (also reported as R2_dsep)
         "configs": written,
     }
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     print(f"\nWrote {', '.join(written)} + manifest.json to {args.out.resolve()}")
-    print("Each .npz: per shot, key shot_XXXX_psirz (T,H,W) + one (T,) key per scalar "
-          f"({', '.join(SCALARS)}) + shot_XXXX_{DSEP} (the sixth composite scalar; also R2_dsep).")
+    print("Each .npz: per shot, key shot_XXXX_psirz (T,H,W) + one (T,) key per submitted scalar "
+          f"({', '.join(SCALARS)}). Everything else is derived from psirz by the scorer.")
     print("Next: python validate_submission.py <config>.npz --config <config>")
 
 

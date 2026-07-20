@@ -6,16 +6,16 @@ Checks that a submission .npz has the right STRUCTURE before you upload it to Co
 NOT score (the scorer is held by the organizers and runs on the platform). Catching a malformed
 file here saves you a wasted submission slot.
 
-A submission predicts the flux map and six composite scalars (the sixth is dsep) per shot
-(grouped per shot; see README →
-"Output & Submission Format"). The LCFS is NOT submitted — the scorer derives it from the flux
-map. For a config this streams the public-test inputs from Hugging Face (no ground truth needed)
-and verifies, for every shot in stream order, with T = number of `efit_times`:
+A submission predicts the flux map plus the two scalars that are not derivable from it — q95 and
+betaN (grouped per shot; see README → "Output & Submission Format"). Nothing else is submitted:
+the LCFS, R_axis/Z_axis, elongation/triangularity, volume, li, and dsep are all DERIVED from your
+submitted flux map by the scorer (with the same functionals it applies to the ground truth), so a
+scalar can only be earned by a flux map that implies it. For a config this streams the
+public-test inputs from Hugging Face (no ground truth needed) and verifies, for every shot in
+stream order, with T = number of `efit_times`:
   - `shot_XXXX_psirz`  present, shape `(T, H, W)` in the machine's native grid (both dense 65×65:
     DIII-D 65×65, MAST 65×65), floating dtype, and (DIII-D only) no NaN/Inf since its GT is finite,
-  - `shot_XXXX_<scalar>` present for each of betaN, li, q95, R_axis, Z_axis, shape `(T,)`, floating,
-  - `shot_XXXX_dsep` present, shape `(T,)`, floating — the x-point gap, the sixth composite scalar
-    (also reported on its own as R²_dsep).
+  - `shot_XXXX_q95` and `shot_XXXX_betaN` present, shape `(T,)`, floating.
 
 Usage:
     python validate_submission.py submission/diii_d_public_test.npz --config diii_d_public_test
@@ -33,8 +33,9 @@ import numpy as np
 REPO_ID = "Sophelio/fusion-equilibrium-challenge"
 # Native flux grid per machine (rows = Z, cols = R).
 GRID = {"DIII-D": (65, 65), "MAST": (65, 65)}
-SCALARS = ["betaN", "li", "q95", "R_axis", "Z_axis"]  # five of the six composite scalars
-DSEP = "dsep"  # the sixth composite scalar in R2_scalars (also reported on its own as R2_dsep)
+# The only two submitted scalars (metric v2): q95 needs F(psi), betaN needs p(psi) — neither is
+# in psi(R,Z). Every other scalar is derived from your submitted flux map by the scorer.
+SCALARS = ["q95", "betaN"]
 # config -> (split, machine). One public-test config = one machine.
 CONFIG_INFO = {
     "diii_d_public_test": ("public_test", "DIII-D"),
@@ -82,8 +83,8 @@ def validate(npz_path: Path, config: str, max_shots: int) -> int:
             if machine == "DIII-D" and not np.isfinite(arr).all():
                 errors.append(f"{k}: contains NaN/Inf (DIII-D is fully finite; those pixels score as error)")
 
-        # scalars (+ dsep): one (T,) array each, named to prevent column mix-ups
-        for name in (*SCALARS, DSEP):
+        # the two submitted scalars: one (T,) array each, named to prevent column mix-ups
+        for name in SCALARS:
             k = f"{prefix}_{name}"
             if k not in sub:
                 errors.append(f"{k}: MISSING (expected ({T},))")
@@ -95,10 +96,13 @@ def validate(npz_path: Path, config: str, max_shots: int) -> int:
                 errors.append(f"{k}: dtype {arr.dtype}, expected float")
 
     if not capped:
-        expected_keys = {f"shot_{i:04d}_{s}" for i in range(n) for s in ("psirz", *SCALARS, DSEP)}
+        expected_keys = {f"shot_{i:04d}_{s}" for i in range(n) for s in ("psirz", *SCALARS)}
         extra = [k for k in sub if k not in expected_keys]
         if extra:
-            errors.append(f"unexpected keys not in stream order: {extra[:5]}{' …' if len(extra) > 5 else ''}")
+            errors.append(
+                f"unexpected keys: {extra[:5]}{' …' if len(extra) > 5 else ''} — the v2 contract "
+                "is psirz + q95 + betaN only (li/R_axis/Z_axis/dsep are derived from your flux "
+                "map by the scorer, not submitted)")
 
     if errors:
         print(f"\n✗ {len(errors)} problem(s):")
