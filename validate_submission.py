@@ -8,7 +8,7 @@ file here saves you a wasted submission slot.
 
 A submission predicts the flux map plus the two scalars that are not derivable from it — q95 and
 betaN (grouped per shot; see README → "Output & Submission Format"). Nothing else is submitted:
-the LCFS, R_axis/Z_axis, elongation/triangularity, volume, li, and dsep are all DERIVED from your
+the LCFS, R_axis/Z_axis, elongation/triangularity, volume and li are all DERIVED from your
 submitted flux map by the scorer (with the same functionals it applies to the ground truth), so a
 scalar can only be earned by a flux map that implies it. For a config this streams the
 public-test inputs from Hugging Face (no ground truth needed) and verifies, for every shot in
@@ -43,6 +43,37 @@ CONFIG_INFO = {
 }
 
 
+def _quantization_warning(arr, key: str):
+    """Catch fixed-decimal rounding, which silently guts the Consistency term.
+
+    `float16` is safe and recommended -- it keeps RELATIVE precision, so the error scales with
+    |psi|. Fixed-decimal rounding (`np.round(psi, 3)`) does not: it leaves an absolute step that
+    is invisible in R2_psi but large compared to the spread of the derived shape scalars. Measured
+    on real ground truth, a PERFECT prediction rounded to 3 decimals still scores R2_psi 0.99997
+    while MAST Consistency collapses to 0.652 (DIII-D 0.979). Participants reach for rounding to
+    shrink the upload, so warn loudly rather than let it show up as an unexplained leaderboard gap.
+
+    Detection: if every finite value is an exact multiple of some step much coarser than the local
+    float16 resolution, the array has been decimal-rounded.
+    """
+    a = np.asarray(arr, dtype=np.float64).ravel()
+    a = a[np.isfinite(a)]
+    if a.size < 64:
+        return None
+    scale = float(np.max(np.abs(a)))
+    if scale <= 0:
+        return None
+    for decimals in range(1, 6):
+        step = 10.0 ** (-decimals)
+        if step < scale * 1e-4:          # finer than float16 would give anyway -> not a concern
+            break
+        if np.allclose(a / step, np.round(a / step), atol=1e-6, rtol=0):
+            return (f"{key}: values look ROUNDED to {decimals} decimal(s) (step {step:g}). "
+                    "Cast to float16 to shrink the file, never np.round -- rounding to 3 decimals "
+                    "costs ~35% of the MAST Consistency term while leaving R2_psi at 0.99997.")
+    return None
+
+
 def validate(npz_path: Path, config: str, max_shots: int) -> int:
     split, machine = CONFIG_INFO[config]
     H, W = GRID[machine]
@@ -59,6 +90,7 @@ def validate(npz_path: Path, config: str, max_shots: int) -> int:
 
     ds = load_dataset(REPO_ID, config, split=split, streaming=True)
     errors: list[str] = []
+    warnings: list[str] = []
     n = 0
     capped = False
     for i, row in enumerate(ds):
@@ -82,6 +114,9 @@ def validate(npz_path: Path, config: str, max_shots: int) -> int:
                 errors.append(f"{k}: dtype {arr.dtype}, expected float")
             if machine == "DIII-D" and not np.isfinite(arr).all():
                 errors.append(f"{k}: contains NaN/Inf (DIII-D is fully finite; those pixels score as error)")
+            warn = _quantization_warning(arr, k)
+            if warn:
+                warnings.append(warn)
 
         # the two submitted scalars: one (T,) array each, named to prevent column mix-ups
         for name in SCALARS:
@@ -101,8 +136,15 @@ def validate(npz_path: Path, config: str, max_shots: int) -> int:
         if extra:
             errors.append(
                 f"unexpected keys: {extra[:5]}{' …' if len(extra) > 5 else ''} — the v2 contract "
-                "is psirz + q95 + betaN only (li/R_axis/Z_axis/dsep are derived from your flux "
+                "is psirz + q95 + betaN only (li/R_axis/Z_axis are derived from your flux "
                 "map by the scorer, not submitted)")
+
+    if warnings:
+        print(f"\n⚠ {len(warnings)} warning(s) — these do NOT fail validation but will cost score:")
+        for w in warnings[:10]:
+            print(f"    - {w}")
+        if len(warnings) > 10:
+            print(f"    … and {len(warnings) - 10} more")
 
     if errors:
         print(f"\n✗ {len(errors)} problem(s):")

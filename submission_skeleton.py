@@ -14,13 +14,13 @@ What you submit (per shot, at each `efit_times` timestamp), grouped per shot in 
 That is the WHOLE contract (metric v2): the flux map plus the only two scalars a flux map cannot
 contain (q95 needs the toroidal field function F(psi), betaN needs the pressure profile p(psi)).
 Everything else — the LCFS boundary, magnetic axis (R_axis/Z_axis), elongation, triangularity,
-volume, internal inductance (li), and the x-point gap (dsep) — is DERIVED from your submitted
+volume and internal inductance (li) — is DERIVED from your submitted
 flux map by the scorer, with the same published functionals it applies to the ground-truth flux.
 A scalar can only be earned by a psi that implies it: there is no separate scalar head to tune.
 
 The leaderboard score is the composite
     S = 0.55*R2_psi + 0.15*R2_{q95,betaN} + 0.10*(1 - D_LCFS) + 0.20*Consistency
-where Consistency is the mean agreement of the eight psi-derived scalars, f(psi_pred) vs
+where Consistency is the mean agreement of the seven psi-derived scalars, f(psi_pred) vs
 f(psi_gt). A perfect flux map scores D_LCFS = 0 and Consistency = 1 by construction.
 
 To make a real submission, replace `your_model_predict()` with your trained model. The placeholder
@@ -59,10 +59,11 @@ def your_model_predict(row: dict, source: str) -> dict:
         Solenoid, TF, …), not measurements of the plasma's field.
       - `thomson_*` = kinetic profiles (electron temperature & density).
       - `efit_times` (+ MAST: `efit_grid_R/Z`).
-    The targets are withheld in test configs. `magnetics_dsep` (the x-point gap) is EFIT-DERIVED
-    (computed from the target equilibrium) and is neither an input nor a submitted channel — the
-    scorer derives dsep from your flux map. Focus on making psi(R,Z) right; the geometry terms
-    (boundary, axis, shape, li, dsep) all follow from it."""
+    The targets are withheld in test configs. `magnetics_dsep` is EFIT-DERIVED (computed from
+    the target equilibrium) and is neither an input nor a scored target. Also available as
+    inputs: `coil_*` (PF-coil positions/turns, joined to the current columns by
+    `coil_input_column`) and `thomson_chord_R/Z` (chord positions). Focus on making psi(R,Z)
+    right; the geometry terms (boundary, axis, shape, li) all follow from it."""
     T = len(np.asarray(row["efit_times"]))
     H, W = GRID[source]
     out = {"psirz": np.zeros((T, H, W), dtype=np.float32)}      # placeholder baseline

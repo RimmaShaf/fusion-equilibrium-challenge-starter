@@ -31,9 +31,9 @@ A single fusion experiment ("shot") lasts a few seconds, but a LOT happens. We g
 ### Beyond the Flux Map: Scalar Targets
 
 The flux map is the *primary* target, but the corrected dataset also ships a handful of
-**EFIT scalar labels** — one number per timestep — that summarise the equilibrium. Under
-metric v2 you *submit* only `q95` and `betaN`; the others are training supervision (at scoring
-time the axis, shape, `li`, and `dsep` are derived from your submitted flux map):
+**EFIT scalar labels** — one number per timestep — that summarise the equilibrium. You *submit*
+only `q95` and `betaN`; the others are training supervision (at scoring time the axis, shape and
+`li` are derived from your submitted flux map):
 
 | Column | Plain English |
 |--------|---------------|
@@ -41,7 +41,7 @@ time the axis, shape, `li`, and `dsep` are derived from your submitted flux map)
 | `efit_li` | Internal inductance ℓi — how peaked vs. broad the current profile is |
 | `efit_q95` | Safety factor at the 95% flux surface — a key stability number (how many times field lines wind the long way per short-way loop near the edge) |
 | `efit_r_axis`, `efit_z_axis` | Where the magnetic axis (the very center of the "valley") sits, in meters |
-| `magnetics_dsep` | The x-point gap — `>0` diverted, `<0` limited. EFIT-derived, so a **target** despite its `magnetics_` name |
+| `magnetics_dsep` | Context only, not scored. DIII-D: EFIT's a-file separatrix↔limiter clearance. MAST: a *different* quantity — divertor balance. EFIT-derived, so withheld on test despite its `magnetics_` name |
 
 These are present in `diii_d_train` and **withheld on the test splits**, exactly like
 `efit_psirz`. `experiments.py` predicts them with a simple per-scalar Ridge baseline and
@@ -49,9 +49,11 @@ reports R² for each (see `results/scalar_r2.png`). Two practical notes:
 
 - **They live on a totally different scale from the flux pixels.** Predict them as their
   own regression targets (raw values), not by squishing them into the flux-map pipeline.
-- **`dsep` is undefined on limited/startup frames** — it shows up as `NaN` or a `-1.0`
-  gap sentinel (~40% of MAST frames, less on DIII-D). **Mask those frames** before
-  training or scoring `dsep`; the starter code does this for you.
+- **`dsep` is no longer scored, and the two machines' columns are not the same quantity.**
+  DIII-D's is a separatrix↔limiter clearance whose sign encodes the configuration; MAST's is
+  divertor *balance* (δR_sep), which straddles zero on ordinary diverted plasmas — **never read
+  its sign as a diverted/limited flag**. It stays in `train` as context; MAST's still carries
+  `NaN` and a `-1.0` sentinel, so mask before using it for anything.
 - **The five scored scalars can also be `NaN`** on frames with incomplete reconstruction
   (a few startup/rampdown frames, plus some frames on a handful of DIII-D shots whose
   scalars sat on a slightly offset EFIT time base). All five share the same valid frames,
@@ -299,7 +301,7 @@ Some signals may have NaN or Inf values at certain timesteps. Check for and hand
 
 ## Evaluation Metrics
 
-**The official leaderboard score is a composite** (metric v2 — flux map, the two predicted
+**The official leaderboard score is a composite** (flux map, the two predicted
 scalars, boundary, and flux-map consistency):
 
 ```
@@ -311,7 +313,7 @@ S_model = 0.55 · R²_ψ  +  0.15 · R²_{q95,βN}  +  0.10 · (1 − D_LCFS)  +
 | **R²_ψ** | Global R² of the flux map over all (R,Z) points × timesteps × shots (clipped ≥ 0) | → 1 |
 | **R²_{q95,βN}** | Mean pooled R² of the two *submitted* scalars, `q95` and `betaN` (clipped ≥ 0) | → 1 |
 | **D_LCFS** | Symmetric Hausdorff distance between the LCFS contours extracted from your ψ and the true ψ, normalized by mean true LCFS major radius (clipped ≤ 1). You don't submit a contour — predict a good ψ. | → 0 |
-| **Consistency** | Mean agreement of the eight ψ-derived scalars (`R_axis, Z_axis, κ, δ_top, δ_bot, V, li, dsep`): each is computed from *your* ψ and scored against the same computation on the *true* ψ (pooled R², clipped ≥ 0, averaged). You don't submit any of them — your flux map has to imply them. | → 1 |
+| **Consistency** | Mean agreement of the seven ψ-derived scalars (`R_axis, Z_axis, κ, δ_top, δ_bot, V, li`): each is computed from *your* ψ and scored against the same computation on the *true* ψ (pooled R², clipped ≥ 0, averaged). You don't submit any of them — your flux map has to imply them. | → 1 |
 
 Cross-machine transfer (Award #2) is `G_ratio = S_model(MAST) / S_model(DIII-D)` among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. **R² can be negative** before

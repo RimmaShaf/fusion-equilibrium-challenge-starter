@@ -14,11 +14,11 @@ This repository is the **public starter kit** for the Fusion Equilibrium Challen
 - **Full training data** on Hugging Face: [`Sophelio/fusion-equilibrium-challenge`](https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge)
 - **Baseline models** in `experiments.py` that load from Hugging Face (same data hackathoners use), and can also read a fully **downloaded** copy of the dataset with `--source local`
 
-> **What you predict (metric v2):** the primary target is the 2-D flux map `efit_psirz`; you
+> **What you predict:** the primary target is the 2-D flux map `efit_psirz`; you
 > submit it plus only **`q95` and `betaN`** — the two scalars a flux map cannot contain. The
 > training data still ships all EFIT scalar labels (`efit_beta_n`, `efit_li`, `efit_q95`,
 > `efit_r_axis`, `efit_z_axis`, `magnetics_dsep`) as supervision, and all are **withheld on the
-> test splits** — but at scoring time the axis, shape, `li`, and `dsep` are *derived from your
+> test splits** — but at scoring time the axis, shape and `li` are *derived from your
 > submitted flux map* and scored for consistency against the same derivation on the true flux.
 > A good ψ is what earns them.
 
@@ -153,13 +153,13 @@ zero-shot* goal: equilibrium reconstruction from actuators + kinetic profiles al
 **MAST track** pushes it one step further — can the learned physics reconstruct a machine the
 model has **never seen** (different size, shape, and coil set)?
 
-> ⚠️ **`magnetics_dsep` is a target quantity, not an input.** It is **EFIT-derived** — computed
-> *from the target equilibrium itself* — so it encodes x-point/divertor geometry straight from the
-> label. It is **withheld on the test splits** (alongside `efit_psirz` and the scalar labels), and
-> under metric v2 you don't submit it either: the scorer **derives `dsep` from your predicted flux
-> map** and scores its agreement with the same derivation on the true flux. Never read `dsep` as a
-> model input — make your ψ imply it. (`magnetics_plasma_current` (Ip) *is* an allowed input: a
-> single legitimate global magnetic scalar, not label-derived.)
+> ⚠️ **`magnetics_dsep` is not an input.** It is **EFIT-derived** — computed *from the target
+> equilibrium itself* — so it encodes x-point/divertor geometry straight from the label, and is
+> **withheld on the test splits** alongside `efit_psirz` and the scalar labels. It is not a scored
+> target either (it was dropped from the metric: DIII-D's `dsep` is a separatrix↔limiter clearance
+> while MAST's is divertor balance — different physical quantities that one functional cannot score
+> coherently). Never read `dsep` as a model input. (`magnetics_plasma_current` (Ip) *is* an allowed
+> input: a single legitimate global magnetic scalar, not label-derived.)
 
 The data isn't *purely* zero-shot — Ip is a real global measurement you may use — but that's fine:
 the setup is a strong starting point for the two things that matter most here: **cross-machine
@@ -193,9 +193,9 @@ Signal names are prefixed with the source:
 
 In physics terms, you are predicting the **Magnetic Equilibrium** — the 2D poloidal flux map
 $\psi(R,Z)$ plus the **two scalars a flux map cannot contain** ($q_{95}$ and $\beta_N$). The
-plasma boundary (**LCFS**), the magnetic axis, the shape scalars, $l_i$, and the x-point gap
-`dsep` are all scored too, but you don't submit any of them — the scorer derives each one from
-your flux map, the same way it derives them from the true flux map. See **Output & Submission
+plasma boundary (**LCFS**), the magnetic axis, the shape scalars and $l_i$ are all scored too,
+but you don't submit any of them — the scorer derives each one from your flux map, the same way
+it derives them from the true flux map. See **Output & Submission
 Format** for exactly what to submit and how it's scored.
 
 ### `efit/` (The Ground Truth)
@@ -211,8 +211,8 @@ This data comes from a reconstruction code called "EFIT" (equilibrium fitting).
 | `efit_grid_R` / `efit_grid_Z` | (65,) | Physical R/Z (m) labelling the flux-map columns/rows (both machines). Kept on every split. |
 
 **EFIT scalar labels** (one value per `efit_times` step; present in `train`, withheld on test).
-Under metric v2 you *submit* only `q95` and `betaN`; the rest are training supervision — at
-scoring time the axis, shape, `li`, and `dsep` are derived from your submitted flux map:
+You *submit* only `q95` and `betaN`; the rest are training supervision — at
+scoring time the axis, shape and `li` are derived from your submitted flux map:
 
 | Key | Shape | Description |
 |-----|-------|-------------|
@@ -220,7 +220,7 @@ scoring time the axis, shape, `li`, and `dsep` are derived from your submitted f
 | `efit_beta_n` | (T,) | Normalised beta β_N — **submitted scalar** |
 | `efit_li` | (T,) | Internal inductance ℓi (supervision; derived from your ψ at scoring) |
 | `efit_r_axis` / `efit_z_axis` | (T,) | Magnetic-axis R/Z (m) (supervision; derived from your ψ at scoring) |
-| `magnetics_dsep` | (T,) | X-point gap (m); `>0` diverted, `<0` limited. EFIT-derived, despite the `magnetics_` prefix (supervision; derived from your ψ at scoring). Undefined on limited/startup frames (NaN or `-1.0` sentinel); mask those before training. |
+| `magnetics_dsep` | (T,) | **Context only — not scored.** EFIT-derived despite the `magnetics_` prefix. DIII-D: the a-file `DSEP` separatrix↔limiter clearance, `>0` on every shipped frame (its sign defined the diverted filter). MAST: a *different* quantity — divertor balance δR_sep, which straddles zero on ordinary diverted plasmas; still carries NaN and a `-1.0` sentinel, so mask before use. |
 | *(bonus, train only)* `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | (T,) / (T, N) | Last-closed-flux-surface boundary contour + valid-point count. Provided as context. |
 
 Reconstructions often include electrical currents present in major conductors such as the vacuum vessel, which for simplicity are omitted here. 
@@ -239,7 +239,7 @@ You submit **two things** for every shot, at each provided `efit_times` timestam
    contain).
 
 You do **not** submit anything else. The LCFS boundary, magnetic axis, elongation, triangularity,
-volume, `li`, and `dsep` are all **derived from your submitted flux map by the scorer**, with the
+volume and `li` are all **derived from your submitted flux map by the scorer**, with the
 same published functionals it applies to the ground-truth flux — so getting ψ right is what earns
 every geometry term, and there is no separate scalar head to tune (or to game).
 
@@ -281,13 +281,13 @@ S_model = 0.55 · R²_ψ  +  0.15 · R²_{q95,βN}  +  0.10 · (1 − D_LCFS)  +
 | `R²_ψ`         | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
 | `R²_{q95,βN}`  | Mean pooled R² of the two submitted scalars vs the stored EFIT values. Clipped to ≥ 0.        |
 | `D_LCFS`       | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
-| `Consistency`  | Mean agreement of the eight ψ-derived scalars — `R_axis, Z_axis, κ, δ_top, δ_bot, V, li, dsep` — computed from your ψ vs the same derivation on the true ψ (pooled R² per scalar, clipped to ≥ 0, averaged). |
+| `Consistency`  | Mean agreement of the seven ψ-derived scalars — `R_axis, Z_axis, κ, δ_top, δ_bot, V, li` — computed from your ψ vs the same derivation on the true ψ (pooled R² per scalar, clipped to ≥ 0, averaged). |
 
-Each consistency scalar is scored only on frames where its ground-truth derivation is well-posed:
-the shape scalars and `dsep` on **diverted** frames only (a limited plasma's boundary is limiter
-contact, which no flux-only functional can see), `dsep` additionally where a clean x-point pair
-exists. A perfect flux map scores `D_LCFS = 0` and `Consistency = 1` **by construction** — the
-same code runs on both sides. Per-scalar breakdowns appear in your submission's detailed results.
+Every consistency scalar is scored on **every** frame. Earlier versions masked the shape scalars
+to diverted frames; the dataset is now diverted-only, so that mask is gone and `R²ψ`,
+`R²{q95,βN}` and `Consistency` all share one frame population. A perfect flux map scores
+`D_LCFS = 0` and `Consistency = 1` **by construction** — the same code runs on both sides.
+Per-scalar breakdowns appear in your submission's detailed results.
 
 **Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
@@ -366,7 +366,7 @@ These 18 coils act like invisible hands that mold the plasma:
 | Signal | Description |
 |--------|-------------|
 | `DIII-D: ip` | Integrated electrical current carried in the plasma bulk (an **input**) |
-| `DIII-D: dsep` | X-point gap: `>0` diverted (magnetic null "xpoint"), `<0` limited. **EFIT-derived, so a prediction target** — present in `train`, withheld on test. |
+| `DIII-D: dsep` | EFIT a-file `DSEP`: minimum separatrix↔limiter clearance (m); `>0` diverted, `<0` limited. **EFIT-derived**, so present in `train` and withheld on test. Context only — not scored. |
 
 ---
 
@@ -447,7 +447,66 @@ system (DIII-D edge = Z, MAST edge = R; core radius in `thomson_core_R`).
 
 ---
 
+## 🆕 Machine geometry (both machines, every split)
 
+A coil current means little until you know where the coil is, and a Thomson profile localises
+nothing until you know where the chord is. Both now ship on every row — they are inputs, so
+nothing is withheld:
+
+| Column | Shape | Description |
+|--------|-------|-------------|
+| `coil_name` | (C,) str | Coil (or conductor element) identifier |
+| `coil_input_column` | (C,) str | **Join key** — the current column this geometry belongs to, e.g. `magnetics_F1A` |
+| `coil_R`, `coil_Z` | (C,) | Conductor-rectangle centre (m) |
+| `coil_width`, `coil_height` | (C,) | Radial / vertical extent (m) |
+| `coil_turns` | (C,) | Turns in that rectangle |
+| `coil_angle1`, `coil_angle2` | (C,) | Parallelogram skew angles (degrees) |
+| `thomson_chord_name` | (N,) str | `TS_core_*`, `TS_tangential_*`, `TS_divertor_*` |
+| `thomson_chord_R`, `thomson_chord_Z` | (N,) | Chord position (m) |
+
+**The two machines describe their coils at different granularity — that is not a bug.** DIII-D
+ships **C = 19 lumped rectangles with turn counts** (18 F-coils + `ECOILA`), the representation
+EFIT's own `mhdin.dat` uses. MAST ships **C = 812 individual conductor elements** from the FAIR
+level-2 `pf_active` IDS, so `coil_turns` is 1 everywhere and the solenoid alone is 656 of them.
+Join either back to the currents with `coil_input_column`; several MAST elements share one column
+(P2 inner/outer are parallel-fed; all 656 solenoid elements share `magnetics_sol_current`).
+
+**Six DIII-D F-coils are parallelograms.** `coil_angle1` / `coil_angle2` are EFIT's `AF` / `AF2`
+shear angles: `F5A`/`F5B` ±45°, `F6A`/`F6B` ±92.4°, `F7A`/`F7B` ±108.06°; everything else 0.0.
+They only matter if you integrate over the conductor cross-section rather than treating each coil
+as a filament. MAST's are structurally 0.0 — IMAS rectangles carry no skew.
+
+> `0.0` means **no skew (plain axis-aligned rectangle)**, not "sides lie flat". EFIT branches on
+> `angle1 == 0 and angle2 == 0` to emit a rectangle, and normalises `90 → 0` on write-out, so 90°
+> and 0° denote the same unskewed coil — we ship the canonical `0`. MAST's zeros mean exactly what
+> the 13 DIII-D zeros mean, so one code path covers both machines.
+
+Every DIII-D F-coil row (R, Z, width, height, turns) matches EFIT's own `mhdin.dat` machine file
+exactly. `ECOILA`'s `coil_turns = 1` is the one nominal value — EFIT models that group as 48
+single-turn elements over the same envelope — so don't use it as an ampere-turn multiplier.
+
+*Not covered:* `magnetics_bcoil` (DIII-D TF) and MAST's `magnetics_tf_current` /
+`magnetics_efps_current` have no poloidal-plane rectangle — 19 of 21 DIII-D current columns and
+11 of 14 MAST ones are covered.
+
+**Chord positions close a real gap.** DIII-D's core Thomson is a *vertical* laser, so
+`thomson_core_R` is a constant ≈ 1.94 m and the informative coordinate — Z — was never shipped;
+the tangential system is the mirror image; and the **divertor** subsystem had no shipped
+counterpart at all. `thomson_chord_R`/`_Z` carry all three subsystems with both coordinates.
+
+> ⚠️ **DIII-D chord positions are per shot and they genuinely vary** — 11 distinct subsystem
+> layouts, channel counts from 59 to 138, because the divertor system was reconfigured between
+> campaigns. Do not cache one shot's chord array and reuse it.
+
+MAST's Thomson is a *horizontal midplane* laser: per-channel R (same values as
+`thomson_core_R` / `thomson_edge_spatial`) with `thomson_chord_Z = 0`. That zero is not a
+placeholder — FAIR level-2 exposes only `thomson_scattering.channel[:].position.r`.
+
+A worked use: build each coil's vacuum Green's function from `coil_R/Z/turns` and you get the
+coil-driven part of ψ analytically rather than learning it. Fitting ψ outside the plasma envelope
+to those Green's functions, with the shipped currents and turn counts, reaches R² ≈ 0.94.
+
+---
 
 ## ⚡ Complete Signal Dictionary
 
@@ -486,7 +545,7 @@ scalar (`dsep`, the x-point gap; see "Equilibrium-Derived Quantities").
 | **Shaping coils (18)** | | | |
 | `DIII-D: F1A`–`F9B` | `magnetics_F{1-9}{A,B}` | `(49152,)` float64 each | Upper (A) / lower (B) shaping coils, ±10 kA. All use `magnetics_time`. |
 | **EFIT-derived (target)** | | | |
-| `DIII-D: dsep` | `magnetics_dsep` | `(T,)` float32 | X-point gap (m). `>0` diverted, `<0` limited. **Prediction target** (EFIT-derived), withheld on test. Uses `magnetics_dsep_times`. |
+| `DIII-D: dsep` | `magnetics_dsep` | `(T,)` float32 | EFIT a-file `DSEP`: separatrix↔limiter clearance (m); `>0` diverted, `<0` limited. EFIT-derived, withheld on test, not scored. Uses `magnetics_dsep_times`. |
 | **Thomson core** (vertical chord, ~R = 1.94 m, looks down) | | | |
 | — | `thomson_core_times` | `(~1300–1900,)` float64 | ms |
 | — | `thomson_core_Te` | `(~T_c,)` of `(44,)` | Electron temperature (eV) per profile |
@@ -521,7 +580,7 @@ scalars) are not distributed. The three MAST demo shots in `parquet_data/` do in
 | **Poloidal field coils (10)** | | | |
 | `MAST: P{2-6}{L,U}` | `magnetics_p{2-6}{l,u}_current` | `(15482,)` float64 each | P2–P6 lower/upper, no P1/P7/P8/P9 |
 | **EFIT-derived** | | | |
-| `MAST: dsep` | `magnetics_dsep` (+ `_times`) | `(T,)` float32 | X-point gap (m), derived from upstream `esm/dr_sep_out`. Same definition and sign convention as DIII-D `dsep`. Aligned to `efit_times`. |
+| `MAST: dsep` | `magnetics_dsep` (+ `_times`) | `(T,)` float32 | **δR_sep — divertor *balance*, NOT the same quantity as DIII-D's `dsep`.** From `esm/dr_sep_out`: the radial gap between the upper and lower separatrices at the outboard midplane, so it straddles zero on ordinary diverted plasmas and **its sign is not a limited/diverted flag**. Carries NaN and a `-1.0` sentinel. Not scored. |
 | **Thomson core** | | | |
 | — | `thomson_core_times` | `(~50–112,)` float64 | ms |
 | — | `thomson_core_Te` | `(~T_c,)` of `(~130,)` | Electron temperature (eV) |
