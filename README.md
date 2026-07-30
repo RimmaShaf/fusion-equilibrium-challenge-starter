@@ -87,9 +87,14 @@ python experiments.py --source local --n-shots 50
 python experiments.py --source local --local-data-dir /path/to/hf_dataset
 ```
 
-The baselines predict the flux map **and** the EFIT scalar targets: after the flux-map
+The baselines predict the flux map **and** regress the EFIT scalar labels: after the flux-map
 models, a Ridge baseline reports per-scalar R² for `efit_beta_n`, `efit_li`, `efit_q95`,
 `efit_r_axis`, `efit_z_axis`, and `magnetics_dsep` (see `results/scalar_r2.png`).
+
+> Those six are **supervision, not the scored set.** Only `q95` and `betaN` are submitted and
+> scored as values; the axis, `li` and the shape scalars are *derived from your submitted flux map*
+> at scoring time; and `magnetics_dsep` is not scored at all. The Ridge numbers are a demo of what
+> the inputs support, not a leaderboard preview.
 
 PyTorch baselines auto-detect the best device (CUDA → MPS → CPU); override with
 `--device cuda|mps|cpu`.
@@ -150,8 +155,8 @@ The motivation is concrete and physical: if a model can reconstruct the equilibr
 magnetic-diagnostic suite**, a tokamak could be built and operated more cheaply without that
 instrumentation — or keep reconstructing when those sensors degrade or fail. This is the *proper
 zero-shot* goal: equilibrium reconstruction from actuators + kinetic profiles alone. The
-**MAST track** pushes it one step further — can the learned physics reconstruct a machine the
-model has **never seen** (different size, shape, and coil set)?
+**MAST leg — Challenge 2** pushes it one step further: can the learned physics reconstruct a
+machine the model has **never seen** (different size, shape, and coil set)?
 
 > ⚠️ **`magnetics_dsep` is not an input.** It is **EFIT-derived** — computed *from the target
 > equilibrium itself* — so it encodes x-point/divertor geometry straight from the label, and is
@@ -220,8 +225,14 @@ scoring time the axis, shape and `li` are derived from your submitted flux map:
 | `efit_beta_n` | (T,) | Normalised beta β_N — **submitted scalar** |
 | `efit_li` | (T,) | Internal inductance ℓi (supervision; derived from your ψ at scoring) |
 | `efit_r_axis` / `efit_z_axis` | (T,) | Magnetic-axis R/Z (m) (supervision; derived from your ψ at scoring) |
-| `magnetics_dsep` | (T,) | **Context only — not scored.** EFIT-derived despite the `magnetics_` prefix. DIII-D: the a-file `DSEP` separatrix↔limiter clearance, `>0` on every shipped frame (its sign defined the diverted filter). MAST: a *different* quantity — divertor balance δR_sep, which straddles zero on ordinary diverted plasmas; still carries NaN and a `-1.0` sentinel, so mask before use. |
+| `magnetics_dsep` | (T,) | **Context only — not scored.** EFIT-derived despite the `magnetics_` prefix. On DIII-D it is the a-file `DSEP` separatrix↔limiter clearance, `>0` on every shipped frame (its sign defined the diverted filter) and free of NaN. On MAST it is a *different* quantity — divertor balance δR_sep, which straddles zero on ordinary diverted plasmas, so **its sign is not a limited/diverted flag**. |
 | *(bonus, train only)* `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | (T,) / (T, N) | Last-closed-flux-surface boundary contour + valid-point count. Provided as context. |
+
+> **Where you will actually see these.** Every column in this table is EFIT-derived, so all of them
+> are withheld on `diii_d_public_test` and `mast_public_test`. Since there is no `mast_train`
+> either, **MAST's labels appear in no released config at all** — the only MAST shots that carry
+> `efit_psirz`, the scalars or `magnetics_dsep` are the three demo files in `parquet_data/`. Build
+> your pipeline so it does not expect them on MAST.
 
 Reconstructions often include electrical currents present in major conductors such as the vacuum vessel, which for simplicity are omitted here. 
 
@@ -283,11 +294,21 @@ S_model = 0.55 · R²_ψ  +  0.15 · R²_{q95,βN}  +  0.10 · (1 − D_LCFS)  +
 | `D_LCFS`       | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
 | `Consistency`  | Mean agreement of the seven ψ-derived scalars — `R_axis, Z_axis, κ, δ_top, δ_bot, V, li` — computed from your ψ vs the same derivation on the true ψ (pooled R² per scalar, clipped to ≥ 0, averaged). |
 
-Every consistency scalar is scored on **every** frame. Earlier versions masked the shape scalars
-to diverted frames; the dataset is now diverted-only, so that mask is gone and `R²ψ`,
-`R²{q95,βN}` and `Consistency` all share one frame population. A perfect flux map scores
-`D_LCFS = 0` and `Consistency = 1` **by construction** — the same code runs on both sides.
-Per-scalar breakdowns appear in your submission's detailed results.
+**No scalar is masked by boundary type any more.** Earlier versions restricted the shape scalars
+to diverted frames; the dataset is now diverted-only, so that mask is gone. Measured on the
+reference folds, six of the seven scalars are well-posed on **100%** of frames and `li` on 99.99%
+(DIII-D) / 99.5% (MAST) — a frame leaves a scalar's average only where the *ground-truth*
+derivation itself fails. If your ψ fails to yield a scalar the truth does have, the frame is not
+skipped: it is mean-substituted and earns ~0. A perfect flux map scores `D_LCFS = 0` and
+`Consistency = 1` **by construction** — the same code runs on both sides. Per-scalar breakdowns
+and your derivation-failure rate appear in your submission's detailed results.
+
+**The flux sign is normalized for you.** DIII-D and MAST store ψ with opposite sign conventions
+(see *Cross-machine convention notes*), so a model that transfers correctly still lands
+sign-inverted. The scorer determines the global sign of your submitted flux map per machine,
+scores you under it, and reports which it used (`psi_sign`: `+1` as submitted, `−1` normalized).
+It is one bit per machine over the whole fold, and only the sign — not the amplitude — is
+normalized. **You do not need to guess the convention.**
 
 **Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
 `R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
@@ -342,8 +363,8 @@ These 18 coils act like invisible hands that mold the plasma:
 
 | Signal                              | Description         | Range     |
 | ----------------------------------- | ------------------- | --------- |
-| `DIII-D: F1A` through `DIII-D: F9A` | Upper shaping coils | ±10,000 A |
-| `DIII-D: F1B` through `DIII-D: F9B` | Lower shaping coils | ±10,000 A |
+| `DIII-D: F1A` through `DIII-D: F9A` | Upper shaping coils | ~±600 kA·turn in-window |
+| `DIII-D: F1B` through `DIII-D: F9B` | Lower shaping coils | ~±600 kA·turn in-window |
 
 
 
@@ -459,15 +480,17 @@ nothing is withheld:
 | `coil_input_column` | (C,) str | **Join key** — the current column this geometry belongs to, e.g. `magnetics_F1A` |
 | `coil_R`, `coil_Z` | (C,) | Conductor-rectangle centre (m) |
 | `coil_width`, `coil_height` | (C,) | Radial / vertical extent (m) |
-| `coil_turns` | (C,) | Turns in that rectangle |
 | `coil_angle1`, `coil_angle2` | (C,) | Parallelogram skew angles (degrees) |
 | `thomson_chord_name` | (N,) str | `TS_core_*`, `TS_tangential_*`, `TS_divertor_*` |
 | `thomson_chord_R`, `thomson_chord_Z` | (N,) | Chord position (m) |
 
 **The two machines describe their coils at different granularity — that is not a bug.** DIII-D
-ships **C = 19 lumped rectangles with turn counts** (18 F-coils + `ECOILA`), the representation
-EFIT's own `mhdin.dat` uses. MAST ships **C = 812 individual conductor elements** from the FAIR
-level-2 `pf_active` IDS, so `coil_turns` is 1 everywhere and the solenoid alone is 656 of them.
+ships **C = 19 lumped rectangles** (18 F-coils + `ECOILA`), the representation EFIT's own
+`mhdin.dat` uses. MAST ships **C = 812 individual conductor elements** from the FAIR level-2
+`pf_active` IDS — one row per conductor turn, the solenoid alone being 656 of them, so a MAST
+coil's turn count is how many rows share its `coil_input_column` (P2 = 20, P3 = 8, P4 = 23,
+P5 = 23, P6 = 4). **Neither machine ships a `coil_turns` column**: the turn counts are folded
+into the current values (see the units note).
 Join either back to the currents with `coil_input_column`; several MAST elements share one column
 (P2 inner/outer are parallel-fed; all 656 solenoid elements share `magnetics_sol_current`).
 
@@ -482,8 +505,11 @@ as a filament. MAST's are structurally 0.0 — IMAS rectangles carry no skew.
 > the 13 DIII-D zeros mean, so one code path covers both machines.
 
 Every DIII-D F-coil row (R, Z, width, height, turns) matches EFIT's own `mhdin.dat` machine file
-exactly. `ECOILA`'s `coil_turns = 1` is the one nominal value — EFIT models that group as 48
-single-turn elements over the same envelope — so don't use it as an ampere-turn multiplier.
+exactly — and those turn counts (58 or 55) are now folded into `magnetics_F*`, which therefore
+carries **total ampere-turns per rectangle**, the quantity a Green's-function calculation wants.
+`ECOILA` is the exception: EFIT models that group as 48 single-turn elements over the same
+envelope and `ECOILB` is a second co-located group not shipped here, so its turn convention is
+ambiguous. `magnetics_ECOILA` is in **kA**, not kA·turn — don't apply an ampere-turn multiplier.
 
 *Not covered:* `magnetics_bcoil` (DIII-D TF) and MAST's `magnetics_tf_current` /
 `magnetics_efps_current` have no poloidal-plane rectangle — 19 of 21 DIII-D current columns and
@@ -494,7 +520,8 @@ single-turn elements over the same envelope — so don't use it as an ampere-tur
 the tangential system is the mirror image; and the **divertor** subsystem had no shipped
 counterpart at all. `thomson_chord_R`/`_Z` carry all three subsystems with both coordinates.
 
-> ⚠️ **DIII-D chord positions are per shot and they genuinely vary** — 11 distinct subsystem
+> ⚠️ **DIII-D chord positions are per shot and they genuinely vary** — 22 distinct channel-name
+> layouts in train (19 in public test) over 6 distinct subsystem
 > layouts, channel counts from 59 to 138, because the divertor system was reconfigured between
 > campaigns. Do not cache one shot's chord array and reuse it.
 
@@ -529,33 +556,33 @@ scalar (`dsep`, the x-point gap; see "Equilibrium-Derived Quantities").
 |---|---|---|---|
 | — | `source` | scalar string | `"DIII-D"` |
 | **EFIT (targets)** | | | |
-| EFIT times | `efit_times` | `(T,)` float64 | ms; T ≈ 50–445 across the dataset (median ~260) |
+| EFIT times | `efit_times` | `(T,)` float64 | ms; T ranges **1–445** across the dataset (median 241); 42 shots have T < 10 and 129 have T < 50 — do not assume a long record |
 | EFIT psirz | `efit_psirz` | `(T,)` of `(65, 65)` | Poloidal flux maps (V·s/rad). *Primary target; withheld on test.* |
 | EFIT grid R/Z | `efit_grid_R`, `efit_grid_Z` | `(65,)` float64 | Physical R/Z (m) of the flux grid. Kept on every split. |
 | EFIT scalars | `efit_beta_n`, `efit_li`, `efit_q95`, `efit_r_axis`, `efit_z_axis` | `(T,)` float64 each | Scored scalar targets (β_N, ℓi, q95, axis R/Z). *Withheld on test.* |
 | EFIT boundary | `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | `(T,)` / `(T, N)` | LCFS contour + valid-point count. Bonus context in `train`. *Withheld on test.* |
 | **Magnetics time bases** | | | |
-| — | `magnetics_time` | `(49152,)` float32 | ms; shared by every magnetics signal at 49 kHz (ECOILA, bcoil, all F-coils) |
+| — | `magnetics_time` | `(M,)` float32 | ms; shared by every DIII-D magnetics signal. **M varies by shot**: 70.0% of train shots (67.0% of public test) are `(480256,)` at ~20 kHz, the rest mostly `(49152,)` or `(50176,)` at 2 kHz. Six distinct lengths occur in all. Both rates span the full ~24 s record — do not hard-code the length. |
 | — | `magnetics_plasma_current_times` | `(30719,)` float32 | ms; Ip is on its own ADC at a different sample rate |
 | — | `magnetics_dsep_times` | `(T,)` float32 | ms; identical to `efit_times` since dsep is EFIT-derived |
 | **Main coils** | | | |
-| `DIII-D: ECOILA` | `magnetics_ECOILA` | `(49152,)` float64 | Ohmic / central solenoid (A). Uses `magnetics_time`. |
-| `DIII-D: bcoil` | `magnetics_bcoil` | `(49152,)` float64 | Toroidal field (A). Uses `magnetics_time`. |
-| `DIII-D: Ip` | `magnetics_plasma_current` | `(30719,)` float32 | Plasma current (A). Uses `magnetics_plasma_current_times`. |
+| `DIII-D: ECOILA` | `magnetics_ECOILA` | `(M,)` float64 | Ohmic / central solenoid — **kA** (not kA·turn; turn convention unresolved). Uses `magnetics_time`. |
+| `DIII-D: bcoil` | `magnetics_bcoil` | `(M,)` float64 | Toroidal field — **kA** (toroidal coil: no PF turn count). Uses `magnetics_time`. |
+| `DIII-D: Ip` | `magnetics_plasma_current` | `(30719,)` float32 | Plasma current — **kA** (matches MAST). Uses `magnetics_plasma_current_times`. |
 | **Shaping coils (18)** | | | |
-| `DIII-D: F1A`–`F9B` | `magnetics_F{1-9}{A,B}` | `(49152,)` float64 each | Upper (A) / lower (B) shaping coils, ±10 kA. All use `magnetics_time`. |
+| `DIII-D: F1A`–`F9B` | `magnetics_F{1-9}{A,B}` | `(M,)` float64 each | Upper (A) / lower (B) shaping coils — **kA·turn** (58 or 55 turns folded in). All use `magnetics_time`. |
 | **EFIT-derived (target)** | | | |
 | `DIII-D: dsep` | `magnetics_dsep` | `(T,)` float32 | EFIT a-file `DSEP`: separatrix↔limiter clearance (m); `>0` diverted, `<0` limited. EFIT-derived, withheld on test, not scored. Uses `magnetics_dsep_times`. |
 | **Thomson core** (vertical chord, ~R = 1.94 m, looks down) | | | |
 | — | `thomson_core_times` | `(~1300–1900,)` float64 | ms |
-| — | `thomson_core_Te` | `(~T_c,)` of `(44,)` | Electron temperature (eV) per profile |
-| — | `thomson_core_ne` | `(~T_c,)` of `(44,)` | Electron density (m⁻³) per profile |
-| — | `thomson_core_R` | `(44,)` float64 | Radial positions (m) — constant ≈ 1.94 since this is a vertical chord |
+| — | `thomson_core_Te` | `(~T_c,)` of `(C_c,)` | Electron temperature (eV) per profile; `C_c` varies by shot |
+| — | `thomson_core_ne` | `(~T_c,)` of `(C_c,)` | Electron density (m⁻³) per profile; `C_c` varies by shot |
+| — | `thomson_core_R` | `(C_c,)` float64 | **varies by shot: 40, 42, 43, 44 or 54 channels** (44 on 6,327 of 7,041 train shots). Radial positions (m) — constant ≈ 1.94 since this is a vertical chord |
 | **Thomson edge** (horizontal tangential view, ~Z ≈ −0.05 m) | | | |
 | — | `thomson_edge_times` | `(~200–500,)` float64 | ms |
-| — | `thomson_edge_Te` | `(~T_e,)` of `(10,)` | Electron temperature (eV) |
-| — | `thomson_edge_ne` | `(~T_e,)` of `(10,)` | Electron density (m⁻³) |
-| — | `thomson_edge_spatial` | `(10,)` float64 | Z positions (m) of the 10 tangential channels |
+| — | `thomson_edge_Te` | `(~T_e,)` of `(C_e,)` | Electron temperature (eV); `C_e` varies by shot |
+| — | `thomson_edge_ne` | `(~T_e,)` of `(C_e,)` | Electron density (m⁻³); `C_e` varies by shot |
+| — | `thomson_edge_spatial` | `(C_e,)` float64 | **varies by shot: 10 channels (6,385 shots) or 14 (656)**. Z positions (m) of the tangential channels |
 
 ### MAST columns
 
@@ -567,20 +594,44 @@ scalars) are not distributed. The three MAST demo shots in `parquet_data/` do in
 |---|---|---|---|
 | — | `source` | scalar string | `"MAST"` |
 | **EFIT (targets — withheld on the MAST test split)** | | | |
-| EFIT times | `efit_times` | `(T,)` float64 | ms; T ≈ 50–139 across the dataset (median ~82) |
+| EFIT times | `efit_times` | `(T,)` float64 | ms; T ranges **5–98** across the dataset (median 58); 397 of 1,206 shots have T < 50 |
 | EFIT psirz | `efit_psirz` | `(T,)` of `(65, 65)` | Clean 65×65 flux map (no NaNs). Upstream MAST stores psirz on a doubled 129-column R grid — 65 real columns interleaved with 64 empty ones — which we drop to recover the dense grid. |
 | EFIT grid R | `efit_grid_R` | `(65,)` float64 | Physical R (m) for the flux grid (≈ 0.06–2.0 m) |
 | EFIT grid Z | `efit_grid_Z` | `(65,)` float64 | Physical Z (m) for the flux grid (≈ −2.0–2.0 m) |
 | **Magnetics (shared time base)** | | | |
-| — | `magnetics_time` | `(15482,)` float64 | ms; shared by every MAST magnetics signal |
-| `MAST: Ip` | `magnetics_plasma_current` | `(15482,)` float64 | Plasma current (A) |
-| `MAST: TF` | `magnetics_tf_current` | `(15482,)` float64 | Toroidal field coil (A) |
-| `MAST: Solenoid` | `magnetics_sol_current` | `(15482,)` float64 | Central solenoid (A) |
-| `MAST: EFPS` | `magnetics_efps_current` | `(15482,)` float64 | Error field protection system (A) |
+| — | `magnetics_time` | `(30000,)` or `(15482,)` float64 | ms; shared by every MAST magnetics signal. **Two populations** — see note below |
+| `MAST: Ip` | `magnetics_plasma_current` | same as `magnetics_time` | Plasma current — **kA** |
+| `MAST: TF` | `magnetics_tf_current` | same as `magnetics_time` | Toroidal field coil feed — **kA** |
+| `MAST: Solenoid` | `magnetics_sol_current` | same as `magnetics_time` | Central solenoid feed — **kA** |
+| `MAST: EFPS` | `magnetics_efps_current` | same as `magnetics_time` | Error field protection system — **kA** |
 | **Poloidal field coils (10)** | | | |
-| `MAST: P{2-6}{L,U}` | `magnetics_p{2-6}{l,u}_current` | `(15482,)` float64 each | P2–P6 lower/upper, no P1/P7/P8/P9 |
+| `MAST: P{2-6}{L,U}` | `magnetics_p{2-6}{l,u}_current` | same as `magnetics_time` | P2–P6 lower/upper (no P1/P7/P8/P9) — **kA·turn**, not kA. See the units note |
+
+> **⚠️ MAST magnetics come in two time-base populations, and one of them has gaps.**
+>
+> - **1,092 of 1,206 test shots** (shot numbers above ~23,750): `magnetics_time` is `(30000,)`,
+>   a uniform 0.2 ms / 5 kHz grid spanning −2,000 → +3,999.8 ms, every column finite.
+> - **114 shots** (the early campaign): `magnetics_time` is `(15482,)` spanning −2,500 → +5,499
+>   ms and is the **union of two acquisition grids** — the poloidal set (P-coils, Ip, solenoid,
+>   EFPS) at 0.2 ms / 5 kHz over −150 → +1,349.8 ms (7,500 samples), and the toroidal field coil
+>   at 1.0 ms / 1 kHz over the full record (8,000 samples). Each column is therefore **null on
+>   the samples belonging to the other grid**: ~52% of rows for the poloidal set, ~48% for TF.
+>
+> **No data is missing** — the nulls are holes in a union axis, not dropouts, and both native
+> grids fully cover the plasma window on every one of the 114 shots. This is the layout
+> FAIR-MAST's own `amc` group ships for those shots.
+>
+> The gaps are plain `NaN` (no parquet nulls anywhere in this release), so mask per column
+> instead of assuming a dense array:
+>
+> ```python
+> t   = np.asarray(row["magnetics_time"], dtype=float)
+> tf  = np.asarray(row["magnetics_tf_current"], dtype=float)
+> ok  = np.isfinite(tf)
+> tf_t, tf_v = t[ok], tf[ok]          # native 1 kHz TF trace, gap-free
+> ```
 | **EFIT-derived** | | | |
-| `MAST: dsep` | `magnetics_dsep` (+ `_times`) | `(T,)` float32 | **δR_sep — divertor *balance*, NOT the same quantity as DIII-D's `dsep`.** From `esm/dr_sep_out`: the radial gap between the upper and lower separatrices at the outboard midplane, so it straddles zero on ordinary diverted plasmas and **its sign is not a limited/diverted flag**. Carries NaN and a `-1.0` sentinel. Not scored. |
+| `MAST: dsep` | `magnetics_dsep` (+ `_times`) | `(T,)` float32 | **δR_sep — divertor *balance*, NOT the same quantity as DIII-D's `dsep`.** From `esm/dr_sep_out`: the radial gap between the upper and lower separatrices at the outboard midplane, so it straddles zero on ordinary diverted plasmas and **its sign is not a limited/diverted flag**. Not scored, and — like every EFIT-derived MAST column — present only in the `parquet_data/` demo shots, never in a released config. |
 | **Thomson core** | | | |
 | — | `thomson_core_times` | `(~50–112,)` float64 | ms |
 | — | `thomson_core_Te` | `(~T_c,)` of `(~130,)` | Electron temperature (eV) |
@@ -594,8 +645,35 @@ scalars) are not distributed. The three MAST demo shots in `parquet_data/` do in
 
 ### Cross-machine convention notes
 
+- **⚠️ The two machines store `efit_psirz` with OPPOSITE SIGN CONVENTIONS.** On **DIII-D** the
+  magnetic axis is the **minimum** of ψ; on **MAST** it is the **maximum**. Measured on the
+  shipped corpus: DIII-D 99.98% of 1,559,340 frames with zero counter-examples, MAST 100%. This
+  is a provenance difference between two EFIT implementations (DIII-D's EFIT vs
+  EFIT++/FAIR-MAST), **not physics** — both machines run positive plasma current here.
+  - A DIII-D-trained model applied zero-shot to MAST predicts a correct equilibrium with the
+    wrong overall sign. A naive R² then reports a large *negative* number and looks like total
+    failure. **Check `R²(−ψ_pred)` before concluding your transfer failed.**
+  - Anything assuming "axis = maximum" (O-point search, contouring, ψ_N normalization) needs the
+    per-machine sign or must detect it.
+  - **The official scorer is sign-invariant**: it determines the global sign of your submitted
+    flux map per machine, scores you under it, and reports which sign it used. You are not being
+    tested on guessing a storage convention. Amplitude is *not* normalized.
+- **⚠️ Current units differ between the machines — and not by a single factor.** Confirmed
+  against FAIR-MAST's own metadata and cross-checked against its IMAS level-2 store (SI, amperes):
+
+  | Columns | Units as shipped | To amperes-per-turn (DIII-D's convention) |
+  | :--- | :--- | :--- |
+  | DIII-D `magnetics_F*`, `ECOILA`, `bcoil`, `plasma_current` | **A** | already A |
+  | MAST `magnetics_plasma_current`, `_tf_current`, `_sol_current`, `_efps_current` | **kA** | `× 1000` |
+  | MAST `magnetics_p{2-6}{l,u}_current` | **kA·turn** | `× 1000 / turns` |
+
+  The ten MAST P-coil columns are **ampere-turns** — upstream labels them `kA * turn` — which is
+  a different quantity from a coil current. Turn counts come from this dataset's own `coil_*`
+  geometry columns (elements per coil): **P2 = 20**, **P3 = 8**, **P4 = 23**, **P5 = 23**,
+  **P6 = 4**. A naive "×1000" therefore fixes Ip/TF/solenoid/EFPS but leaves every P-coil wrong
+  by 8–23×. Normalizing per machine (recommended) absorbs all of it.
 - **Time units are ms everywhere**, including MAST (`magnetics_time`, `efit_times`, `magnetics_dsep_times`). MAST upstream stores some signals in seconds; the conversion is applied at parquet build time so participants don't have to think about it.
-- **Magnetics time base is shared per machine**: both DIII-D and MAST expose one `magnetics_time` array used by every coil signal at the primary sampling rate. On DIII-D, `magnetics_plasma_current` (Ip) sits on its own ADC at a different rate and therefore has its own `magnetics_plasma_current_times` companion.
+- **Magnetics time base is shared per machine**: both DIII-D and MAST expose one `magnetics_time` array used by every coil signal at the primary sampling rate. On DIII-D, `magnetics_plasma_current` (Ip) sits on its own ADC at a different rate and therefore has its own `magnetics_plasma_current_times` companion. On MAST, 114 early-campaign shots use a two-grid union base with per-column nulls — see the MAST magnetics note above.
 - `dsep` **is on the EFIT time base**: `magnetics_dsep_times` is identical to `efit_times` on every shot for both machines. It's grouped under `magnetics_`* only for column-naming consistency; physically it's an EFIT-derived geometric quantity, not a magnetic measurement.
 - `magnetics_time` **spans cover the full DAQ window** (pre-shot baseline through post-shot ringdown), so they extend well beyond the plasma's actual lifetime. The plasma window is bounded by `efit_times`.
 

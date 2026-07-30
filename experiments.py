@@ -3,9 +3,24 @@ Fusion Equilibrium Challenge - Baseline Model Experiments
 
 End-to-end demo: load DIII-D training shots (from the Hugging Face Hub *or* a fully
 downloaded local copy), train models to predict plasma shape (the 2D flux map
-`efit_psirz`) plus the scored EFIT scalar labels (`efit_beta_n`, `efit_li`, `efit_q95`,
-`efit_r_axis`, `efit_z_axis`, and the EFIT-derived x-point gap `magnetics_dsep`) from
-coil currents and Thomson scattering, then evaluate and plot results.
+`efit_psirz`) plus the EFIT scalar labels, from coil currents and Thomson scattering,
+then evaluate and plot results.
+
+What the official metric actually scores is narrower than what this demo regresses, and the
+difference matters when reading the numbers below:
+
+  * SUBMITTED and scored as values -- `efit_q95` and `efit_beta_n` ONLY. They need `F(psi)` and
+    `p(psi)`, which a flux map does not contain, so they stay genuine prediction targets.
+  * DERIVED from your submitted flux map at scoring time -- the axis (`efit_r_axis`/`efit_z_axis`),
+    `efit_li`, and the boundary shape scalars. Regressing them here is useful supervision, but on
+    the leaderboard they are earned by a good `psi`, not by a separate head.
+  * NOT SCORED AT ALL -- `magnetics_dsep`. It was an eighth consistency scalar in metric v2 and was
+    dropped in v3: DIII-D's column is EFIT's a-file separatrix<->limiter clearance while MAST's is
+    divertor balance, so one functional could not score both machines coherently. It remains in
+    `diii_d_train` as context and is regressed below purely as a demo.
+
+`validate_submission.py` is the authority on the submission contract (`SCALARS = ["q95",
+"betaN"]`).
 
 Training data: https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge
 (config `diii_d_train`). Demo parquet shots in `parquet_data/` are for the dFL only.
@@ -102,12 +117,13 @@ D3D_MAGNETICS_SIGNALS = [
     "plasma_current",
 ]
 
-# EFIT scalar labels scored alongside the flux map. One value per `efit_times` step.
-# Present in `diii_d_train`, withheld on the test splits (same as `efit_psirz`).
-# `magnetics_dsep` (the x-point gap) is EFIT-derived — a prediction target, not an input.
-# It is only defined when the plasma has an active x-point; limited/startup frames are
-# undefined and show up as NaN or a -1.0 gap sentinel (mask those before training/scoring).
-EFIT_SCALAR_TARGETS = [
+# EFIT scalar LABELS available as supervision in `diii_d_train`, one value per `efit_times`
+# step, all withheld on the test splits (same as `efit_psirz`). This is NOT the scored set --
+# only `efit_q95` and `efit_beta_n` are submitted and scored as values; see the module docstring.
+# `magnetics_dsep` is EFIT-derived (a label, never an input) and is no longer scored at all; it is
+# kept here only so the demo can plot it. On the shipped diverted-only corpus it is `> 0` on every
+# frame, but the -1.0 gap sentinel is still masked below for safety.
+EFIT_SCALAR_LABELS = [
     "efit_beta_n", "efit_li", "efit_q95", "efit_r_axis", "efit_z_axis", "magnetics_dsep",
 ]
 DSEP_GAP_SENTINEL = -1.0
@@ -173,9 +189,9 @@ def load_shot_from_hf_row(row: dict) -> dict:
         except Exception:
             pass
 
-    # EFIT scalar targets (present in train, withheld on test splits)
+    # EFIT scalar labels (present in train, withheld on test splits)
     scalars: dict = {}
-    for name in EFIT_SCALAR_TARGETS:
+    for name in EFIT_SCALAR_LABELS:
         if name not in row:
             continue
         try:
@@ -336,7 +352,7 @@ def build_feature_matrix(
         S        (total_T, n_scalars)       — EFIT scalar targets (NaN where undefined)
         shot_ids (total_T,)
     """
-    n_scalars = len(EFIT_SCALAR_TARGETS)
+    n_scalars = len(EFIT_SCALAR_LABELS)
     X_parts, Y_parts, S_parts, id_parts = [], [], [], []
 
     for shot in shots:
@@ -354,7 +370,7 @@ def build_feature_matrix(
         # EFIT scalars are already on the efit_times base; NaN-fill any that are absent
         scal = np.full((n_times, n_scalars), np.nan, dtype=np.float32)
         shot_scalars = shot.get("scalars", {})
-        for j, name in enumerate(EFIT_SCALAR_TARGETS):
+        for j, name in enumerate(EFIT_SCALAR_LABELS):
             arr = shot_scalars.get(name)
             if arr is not None:
                 m = min(n_times, len(arr))
@@ -480,7 +496,7 @@ class FusionDataPipeline:
             "Y_train": Y_train, "Y_val": Y_val, "Y_test": Y_test,
             "Y_train_pca": Y_train_pca, "Y_val_pca": Y_val_pca, "Y_test_pca": Y_test_pca,
             "S_train": S_train, "S_val": S_val, "S_test": S_test,
-            "scalar_names": list(EFIT_SCALAR_TARGETS),
+            "scalar_names": list(EFIT_SCALAR_LABELS),
             "scaler": scaler, "target_pca": target_pca,
             "n_features": X_train.shape[1],
         }

@@ -110,9 +110,29 @@ MAST_SIGNALS = {
     "magnetics/dsep": "dsep",
 }
 
-# Per-signal units. Everything not listed defaults to amps.
+# Per-signal units.
+#
+# Coil currents are harmonized across the two machines: every POLOIDAL SHAPING coil -- DIII-D's
+# F1A..F9B and MAST's P2..P6 -- is in kiloampere-turns, so the two machines' shaping coils are
+# directly comparable. DIII-D's F-coil turn counts (58 or 55) are folded into the values at build
+# time; MAST's P-coils are natively kA*turn upstream. Plasma current is kA on both machines.
+#
+# Four channels stay in plain kA rather than kA*turn because no trustworthy turn count exists for
+# them: DIII-D `ECOILA` (EFIT models that group as 48 single-turn elements and ECOILB is a second
+# co-located group not shipped, so its turn convention is ambiguous) and `bcoil`, and MAST's
+# `sol_current` / `tf_current` (toroidal coils have no poloidal-geometry entry). `efps_current` is
+# not a coil at all. Anything not listed defaults to kA*turn.
+_KA = "kA"
 SIGNAL_UNITS = {
     "magnetics/dsep": "m",
+    # DIII-D -- not kA*turn
+    "magnetics/ECOILA": _KA,
+    "magnetics/bcoil": _KA,
+    "magnetics/plasma_current": _KA,
+    # MAST -- not kA*turn
+    "magnetics/sol_current": _KA,
+    "magnetics/tf_current": _KA,
+    "magnetics/efps_current": _KA,
 }
 
 
@@ -798,7 +818,7 @@ def _load_signals_from_parquet(
         # Get display name
         display_name = _get_signal_display_name(internal_path, data_source)
 
-        data_unit = SIGNAL_UNITS.get(internal_path, "A")
+        data_unit = SIGNAL_UNITS.get(internal_path, "kA*turn")
         record = {
             "data": data,
             "data_name": display_name,

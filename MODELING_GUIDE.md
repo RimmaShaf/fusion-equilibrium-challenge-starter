@@ -120,7 +120,9 @@ That's a LOT of outputs for very few inputs. This is what makes the problem inte
 
 The magnet measurements and the flux map snapshots are recorded at **different sampling rates**.
 
-- The magnets are measured ~49,000 times per shot (very fast sampling)
+- The magnets are measured ~50,000 to ~480,000 times per shot (very fast sampling — DIII-D has
+  two populations, ~70% of shots at 20 kHz and the rest at 2 kHz, so read `magnetics_time` per
+  shot rather than assuming a length)
 - The flux maps are computed only ~300 times per shot (expensive calculation)
 - Thomson scattering has its own separate time base (~1,800 core samples, ~200 edge samples)
 
@@ -287,7 +289,7 @@ The EFIT flux maps are your ground truth. Interpolating, resampling, or smoothin
 
 ### Normalize Your Inputs
 
-Magnetics signals have very different scales (plasma current might be ~1,000,000 A while shaping coils are ~10,000 A). Use `StandardScaler` or similar normalization so the model doesn't weight large-magnitude signals more just because they have bigger numbers.
+Magnetics signals have very different scales (DIII-D plasma current peaks near ~1,000 kA while the shaping coils run ~140 kA·turn, and MAST's P3/P6 coils sit near ~3 kA·turn). Use `StandardScaler` or similar normalization so the model doesn't weight large-magnitude signals more just because they have bigger numbers.
 
 ### Start Small, Scale Up
 
