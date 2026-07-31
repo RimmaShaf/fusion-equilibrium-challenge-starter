@@ -345,27 +345,36 @@ Submit on Codabench: **https://www.codabench.org/competitions/17456/** (register
 
 ### Route A — Hugging Face pointer (recommended)
 
-Push the `.npz` to a **public** Hugging Face *dataset* repo and submit a ~200-byte
-`manifest.json` naming a pinned commit. `push_predictions.py` does all of it:
+Push the `.npz` to a **private** Hugging Face *dataset* repo and submit a small `manifest.json`
+naming a pinned commit plus a read token scoped to that one repo. Your predictions stay private.
+`push_predictions.py` does all of it:
 
 ```bash
-uv run huggingface-cli login                    # once, with a write token
-uv run python push_predictions.py --repo your-username/fusion-eq-predictions
+uv run huggingface-cli login                    # once, with a WRITE token — stays on your machine
+uv run python push_predictions.py \
+    --repo your-username/fusion-eq-predictions \
+    --read-token hf_...                         # scoped READ token, see below
 ```
 
-That writes `submission_pointer.zip` — upload **that** on the Submit tab. It verifies the repo is
-public and that the files really are at the repo root before you spend a submission slot.
+That writes `submission_pointer.zip` — upload **that** on the Submit tab. It verifies with the read
+token that the scorer will actually be able to see your files, before you spend a submission slot.
 
 Why this is the default advice, measured from the scoring machine: **Codabench's file storage
 sustains ~0.5 MB/s and the Hugging Face CDN ~50 MB/s.** A 1.9 GB direct upload spends about an
 hour in transfer before scoring starts; the pointer takes under a minute. The scoring worker
 runs one job at a time, so that hour is queue time everyone shares.
 
-The repo must be public — the scoring container authenticates as nobody — which means other teams
-can see your predictions. Publishing your own work carries no penalty. **Submitting predictions
-you did not produce is plagiarism and disqualifies the whole team**, and the organizers re-score
-leading entries from source before prizes; the pinned commit SHA exists so that what was scored
-cannot be changed afterwards.
+**Two tokens, different jobs.** The **write** token uploads your files and never leaves your
+machine (`huggingface-cli login`). The **fine-grained read** token goes inside `manifest.json` and
+is submitted, so the scorer can read your private repo. Create it at
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → *New token* →
+**Fine-grained** → select your predictions repo → tick **only** "Read access to contents of
+selected repos". `push_predictions.py` refuses a write token or a classic read token, since both
+grant more than the scorer needs. Revoke it when the competition ends.
+
+**Submitting predictions you did not produce is plagiarism and disqualifies the whole team.** The
+organizers re-score leading entries from source before prizes; the pinned commit SHA exists so
+that what was scored cannot be changed afterwards.
 
 ### Route B — direct upload
 

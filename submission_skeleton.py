@@ -122,7 +122,7 @@ def main() -> None:
 
     # Descriptive only on the direct-upload route -- the scorer locates your predictions by
     # FILENAME. On the recommended Hugging Face pointer route this file is what you submit, and
-    # push_predictions.py rewrites it with the {repo_id, revision} the scorer reads.
+    # push_predictions.py rewrites it with the {repo_id, revision, token} the scorer reads.
     manifest = {
         "scalars": SCALARS,
         "configs": written,
@@ -134,8 +134,8 @@ def main() -> None:
     print("Each .npz: per shot, key shot_XXXX_psirz (T,H,W) + one (T,) key per submitted scalar "
           f"({', '.join(SCALARS)}). Everything else is derived from psirz by the scorer.")
     print("Next: python validate_submission.py <config>.npz --config <config>")
-    print("Then: python push_predictions.py --repo <you>/fusion-eq-predictions   "
-          "(recommended -- see README 'How to submit')")
+    print("Then: python push_predictions.py --repo <you>/fusion-eq-predictions --read-token hf_..."
+          "\n      (recommended route -- see README 'How to Submit')")
 
 
 if __name__ == "__main__":
