@@ -214,25 +214,36 @@ from experiments import load_shot_from_hf_row, interpolate_magnetics_to_efit
 
 ## 5. Build and submit
 
-Open `submission_skeleton.py` and replace `your_model_predict()` with your model. Then **one
-command** builds the predictions, validates their structure, pushes them to a private Hugging Face
-repo, and writes the zip you upload to Codabench.
+Open `submission_skeleton.py` and replace `your_model_predict()` with your model. Then three steps
+— the first two happen **once**, the third every time you submit.
 
-**First time only** — create the repo. Hugging Face cannot scope a token to a repo that does not
-exist yet, so this is a separate step:
+Your predictions go to a **private** Hugging Face repo, and what you upload to Codabench is a small
+file pointing at it. Nobody else can see your repo, and scoring starts in seconds instead of after
+an hour of transfer.
+
+### Step 1 · Create your predictions repo
 
 ```bash
 uv run python submission_skeleton.py --max-shots 5 --repo your-username/fusion-eq-predictions
 ```
 
-Use **your own username** as the namespace unless you have write access to an organization. The
-script prints exactly how to make the read token. Do that now:
+Use **your own username** as the namespace unless you have write access to an organization. This
+builds 5 shots as a quick format check and creates the (private) repo.
 
-> [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → **New token** →
-> **Fine-grained** → under *Repository permissions* select your predictions repo → tick **only**
-> "Read access to contents of selected repos".
+✅ It ends by printing the repo URL and the exact recipe for step 2.
 
-**Every submission after that** is one command:
+### Step 2 · Create a read token
+
+At [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → **New token** →
+**Fine-grained** → under *Repository permissions* pick the repo you just made → tick **only**
+"Read access to contents of selected repos".
+
+Steps 1 and 2 are separate because Hugging Face cannot scope a token to a repo that does not exist
+yet.
+
+✅ You have a second token starting `hf_`. Keep it — you will paste it into every submission.
+
+### Step 3 · Build the real submission
 
 ```bash
 uv run python submission_skeleton.py --max-shots 0 \
@@ -240,36 +251,36 @@ uv run python submission_skeleton.py --max-shots 0 \
     --read-token hf_...
 ```
 
-`--max-shots 0` means every shot. **The default is 5**, which is a fast format check — a submission
-built without this flag scores almost everything as missing.
+`--max-shots 0` means **every shot**. The default is 5 — a submission built without this flag scores
+almost everything as missing.
 
-A full run takes a while and is not stuck: it streams the public test fold once to build, again to
-validate the structure, and only then uploads. Pass `--skip-validate` to drop the second pass, but
-the structure check is what catches a malformed `.npz` before it costs you a submission slot.
+This streams the public test fold once to build, again to validate, and then uploads, so it takes a
+while and is not stuck.
 
-It writes **`submission_pointer.zip`**. That file is your entire submission.
+✅ It ends with `==> Upload this to Codabench: .../submission_pointer.zip`. **That file is your
+entire submission** — a few hundred bytes. On to §6.
 
-**Why a pointer instead of uploading the predictions.** Measured from the scoring machine:
-Codabench's file storage sustains ~0.5 MB/s, the Hugging Face CDN ~50 MB/s. Your predictions go to
-Hugging Face; only a few hundred bytes travel through Codabench, and scoring starts in seconds
-rather than after an hour of transfer. The scoring worker runs one job at a time, so this is queue
-time everyone shares.
+---
 
-**Two tokens, different jobs.** The **write** token (step 1, `huggingface-cli login`) uploads your
-files and never leaves your machine. The **fine-grained read** token goes inside `manifest.json`
-and *is* submitted, so the scorer can read your private repo. The script refuses a write token or a
-classic read token for that slot — both grant far more than the scorer needs. Revoke the read token
-when the competition ends.
+**The two tokens** trip people up, so to be explicit:
 
-Your predictions repo is **private**; nothing you submit is visible to other teams. **Submitting
-predictions you did not produce is plagiarism and disqualifies the whole team** — organizers
-re-score leading entries from source before prizes, and the pinned commit SHA exists so that what
-was scored cannot be changed afterwards.
+| | what it does | where it goes |
+|---|---|---|
+| **write** token | uploads your `.npz` to Hugging Face | `huggingface-cli login` back in §1; never leaves your machine |
+| **fine-grained read** token | lets the scorer read your private repo | inside the zip; submitted |
+
+The script **refuses** a write token or a classic read token in the `--read-token` slot — that is
+not a bug. Both grant far more than the scorer needs, and that token travels with your submission.
+Revoke it when the competition ends.
+
+**Submitting predictions you did not produce is plagiarism and disqualifies the whole team.**
+Organizers re-score leading entries from source before prizes, and your submission pins a commit
+SHA so that what was scored cannot be changed afterwards.
 
 <details>
-<summary>Running the steps separately, or re-pushing without rebuilding</summary>
+<summary>Re-pushing without rebuilding, or skipping Hugging Face entirely</summary>
 
-A full build streams the entire public test fold, so you will not want to redo it just to re-push:
+A full build streams the whole test fold, so you will not want to redo it just to re-push:
 
 ```bash
 uv run python submission_skeleton.py --max-shots 0            # build only
@@ -277,12 +288,17 @@ uv run python validate_submission.py submission/diii_d_public_test.npz --config 
 uv run python push_predictions.py --repo you/fusion-eq-predictions --read-token hf_...
 ```
 
-There is also a direct-upload fallback that needs no Hugging Face account: zip the two `.npz` at
-the **root** of an archive and upload that instead. It scores identically but spends about an hour
-in transfer and counts against your 15 GB Codabench quota.
+`--skip-validate` drops the validation pass, but that pass is what catches a malformed `.npz`
+before it costs you a submission slot.
+
+**Direct upload**, if you would rather not use Hugging Face at all: put the two `.npz` at the
+**root** of a zip and upload that instead. It scores identically, but expect about an hour of
+transfer per submission and it counts against your 15 GB Codabench quota.
 
 ```bash
-cd submission && zip -0 -r ../submission.zip .
+uv run python -c "import zipfile,pathlib; \
+z=zipfile.ZipFile('submission.zip','w'); \
+[z.write(p, p.name) for p in pathlib.Path('submission').glob('*.npz')]; z.close()"
 ```
 </details>
 
@@ -290,17 +306,19 @@ cd submission && zip -0 -r ../submission.zip .
 
 ## 6. Upload to Codabench
 
-Register at **[codabench.org/competitions/17456](https://www.codabench.org/competitions/17456/)**,
-then **Submit** tab → upload `submission_pointer.zip`.
+1. Register at **[codabench.org/competitions/17456](https://www.codabench.org/competitions/17456/)**.
+2. **Submit** tab → upload `submission_pointer.zip`.
+3. Your score appears on the leaderboard in a few minutes. Open **Detailed Results** for the
+   per-term breakdown, the per-scalar Consistency `R²`, and your derivation-failure rate.
 
-| | |
-|---|---|
-| **Development phase** | now → **October 18, 2026** — 5 submissions/day, 100 total |
-| **Final phase** | October 19–26, 2026 — 3 submissions total, blind, leaderboard hidden |
+The leaderboard has one column per challenge — sort by **Ch1: DIII-D S** or **Ch2: G_ratio**. One
+submission enters both: Challenge 1 needs only the DIII-D file, Challenge 2 needs both machines, so
+a DIII-D-only entry shows `G_ratio = 0`.
 
-Scores appear on the leaderboard, with per-scalar breakdowns and your derivation-failure rate under
-**Detailed Results**. Sort by *Ch1: DIII-D S* for Challenge 1, *Ch2: G_ratio* for Challenge 2. A
-DIII-D-only entry shows `G_ratio = 0`.
+| | when | how many |
+|---|---|---|
+| **Development** | now → **October 18, 2026** | 5 submissions/day, 100 total |
+| **Final** | **October 19–26, 2026** | 3 total — blind, leaderboard hidden until close |
 
 By submitting you agree to the competition rules and the dataset terms. Starter-kit code is
 MIT-licensed (`LICENSE`).
