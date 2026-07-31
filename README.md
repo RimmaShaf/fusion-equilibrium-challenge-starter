@@ -334,16 +334,50 @@ Submit on Codabench: **https://www.codabench.org/competitions/17456/** (register
 
 1. **Generate** predictions in the proposed format: `python submission_skeleton.py --max-shots 0`
    (after swapping in your model). Produces `submission/diii_d_public_test.npz` and
-   `submission/mast_public_test.npz`.
+   `submission/mast_public_test.npz` — about **1.9 GB** together in `float16`.
 2. **Validate** each file with `validate_submission.py` (above) — a malformed `.npz` is the most
    common cause of a failed submission.
-3. **Zip** the two `.npz` files plus a `manifest.json` (see `submission_skeleton.py`) at the root of
-   the archive, and **upload the zip** on the competition's **Submit** tab. The platform scores your
-   predictions against the held-out ground truth and updates the leaderboard. You enter both
-   challenges with one submission — **Challenge 1 (DIII-D)** needs only the DIII-D file; **Challenge 2
+3. **Submit** by one of the two routes below. Both score identically; you enter both challenges
+   with one submission — **Challenge 1 (DIII-D)** needs only the DIII-D file; **Challenge 2
    (cross-machine `G_ratio`)** additionally needs the MAST file.
 4. **Development phase deadline:** **October 18, 2026**. **Submission limits:** **5 per day, 100
    total** per participant during Development (the blind Final phase, Oct 19–26, allows 3 total).
+
+### Route A — Hugging Face pointer (recommended)
+
+Push the `.npz` to a **public** Hugging Face *dataset* repo and submit a ~200-byte
+`manifest.json` naming a pinned commit. `push_predictions.py` does all of it:
+
+```bash
+uv run huggingface-cli login                    # once, with a write token
+uv run python push_predictions.py --repo your-username/fusion-eq-predictions
+```
+
+That writes `submission_pointer.zip` — upload **that** on the Submit tab. It verifies the repo is
+public and that the files really are at the repo root before you spend a submission slot.
+
+Why this is the default advice, measured from the scoring machine: **Codabench's file storage
+sustains ~0.5 MB/s and the Hugging Face CDN ~50 MB/s.** A 1.9 GB direct upload spends about an
+hour in transfer before scoring starts; the pointer takes under a minute. The scoring worker
+runs one job at a time, so that hour is queue time everyone shares.
+
+The repo must be public — the scoring container authenticates as nobody — which means other teams
+can see your predictions. Publishing your own work carries no penalty. **Submitting predictions
+you did not produce is plagiarism and disqualifies the whole team**, and the organizers re-score
+leading entries from source before prizes; the pinned commit SHA exists so that what was scored
+cannot be changed afterwards.
+
+### Route B — direct upload
+
+Zip the two `.npz` at the **root** of the archive and upload it on the **Submit** tab:
+
+```bash
+cd submission && zip -0 -r ../submission.zip .   # -0 = stored; the .npz are already compressed
+```
+
+Nothing external is involved, but expect ~1 h of transfer per submission, and it counts against
+your 15 GB Codabench storage quota (~7 full submissions — delete superseded ones from the
+Resources tab).
 
 By submitting you agree to the official competition rules and the dataset terms (see the dataset
 card on Hugging Face and the Disclaimer below). Starter-kit code is MIT-licensed (`LICENSE`).

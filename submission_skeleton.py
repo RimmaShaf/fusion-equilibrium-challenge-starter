@@ -85,8 +85,13 @@ def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> 
         out = your_model_predict(row, source)
 
         assert out["psirz"].shape == (T, H, W), f"{config} shot {i}: psirz {out['psirz'].shape} != {(T, H, W)}"
-        preds[f"shot_{i:04d}_psirz"] = out["psirz"].astype(np.float32)
-        for name in SCALARS:   # the two submitted scalars
+        # float16 for the flux map. It dominates the file: float32 makes a full both-machine
+        # submission ~4.1 GB instead of ~1.9 GB, for a measured cost of ~0.1% of the composite
+        # score (the scorer upcasts to float32 on read). Do NOT instead round to a fixed number
+        # of decimals -- np.round(psi, 3) leaves R2_psi at 0.99997 while destroying ~35% of the
+        # MAST Consistency term. See the Submission format page.
+        preds[f"shot_{i:04d}_psirz"] = out["psirz"].astype(np.float16)
+        for name in SCALARS:   # the two submitted scalars -- (T,) each, so size is irrelevant
             arr = np.asarray(out[name])
             assert arr.shape == (T,), f"{config} shot {i}: {name} {arr.shape} != ({T},)"
             preds[f"shot_{i:04d}_{name}"] = arr.astype(np.float32)
@@ -115,18 +120,22 @@ def main() -> None:
     for config, split in TEST_CONFIGS:
         written.append(build_submission(config, split, args.out, args.max_shots).name)
 
-    # Descriptive only. The scorer locates your predictions by FILENAME and never reads this
-    # file (except in the optional Hugging-Face-pointer mode, which needs repo_id/revision).
+    # Descriptive only on the direct-upload route -- the scorer locates your predictions by
+    # FILENAME. On the recommended Hugging Face pointer route this file is what you submit, and
+    # push_predictions.py rewrites it with the {repo_id, revision} the scorer reads.
     manifest = {
         "scalars": SCALARS,
         "configs": written,
     }
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    print(f"\nWrote {', '.join(written)} + manifest.json to {args.out.resolve()}")
+    total_mb = sum((args.out / w).stat().st_size for w in written) / 1e6
+    print(f"\nWrote {', '.join(written)} + manifest.json to {args.out.resolve()}  ({total_mb:.0f} MB)")
     print("Each .npz: per shot, key shot_XXXX_psirz (T,H,W) + one (T,) key per submitted scalar "
           f"({', '.join(SCALARS)}). Everything else is derived from psirz by the scorer.")
     print("Next: python validate_submission.py <config>.npz --config <config>")
+    print("Then: python push_predictions.py --repo <you>/fusion-eq-predictions   "
+          "(recommended -- see README 'How to submit')")
 
 
 if __name__ == "__main__":
