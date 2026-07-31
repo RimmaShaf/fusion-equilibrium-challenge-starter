@@ -351,13 +351,22 @@ naming a pinned commit plus a read token scoped to that one repo. Your predictio
 
 ```bash
 uv run huggingface-cli login                    # once, with a WRITE token — stays on your machine
+
+# First time only: create the repo. Nothing is uploaded; it prints how to scope a token to it.
+uv run python push_predictions.py --repo your-username/fusion-eq-predictions
+
+# Then, and for every submission after: upload and write the pointer.
 uv run python push_predictions.py \
     --repo your-username/fusion-eq-predictions \
-    --read-token hf_...                         # scoped READ token, see below
+    --read-token hf_...
 ```
 
-That writes `submission_pointer.zip` — upload **that** on the Submit tab. It verifies with the read
-token that the scorer will actually be able to see your files, before you spend a submission slot.
+The first run is separate because Hugging Face can't scope a token to a repo that doesn't exist
+yet. Use **your own username** as the namespace unless you have write access to an organization.
+
+The second run writes `submission_pointer.zip` — upload **that** on the Submit tab. It verifies with
+the read token that the scorer will actually be able to see your files, before you spend a
+submission slot.
 
 Why this is the default advice, measured from the scoring machine: **Codabench's file storage
 sustains ~0.5 MB/s and the Hugging Face CDN ~50 MB/s.** A 1.9 GB direct upload spends about an
