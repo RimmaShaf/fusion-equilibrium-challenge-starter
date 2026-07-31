@@ -107,9 +107,6 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Generate a format-correct submission skeleton")
     ap.add_argument("--max-shots", type=int, default=5, help="cap shots per config (0 = all)")
     ap.add_argument("--out", type=Path, default=Path("submission"))
-    ap.add_argument("--harmonization", default="default-H",
-                    help="harmonization-layer id recorded in manifest.json (an optional label — "
-                         "it is not scored and gates nothing)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -118,9 +115,9 @@ def main() -> None:
     for config, split in TEST_CONFIGS:
         written.append(build_submission(config, split, args.out, args.max_shots).name)
 
-    # Manifest with the optional harmonization-layer label (descriptive metadata only).
+    # Descriptive only. The scorer locates your predictions by FILENAME and never reads this
+    # file (except in the optional Hugging-Face-pointer mode, which needs repo_id/revision).
     manifest = {
-        "harmonization_layer": args.harmonization,
         "scalars": SCALARS,
         "configs": written,
     }

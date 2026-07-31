@@ -265,9 +265,9 @@ config). Each scalar is its own named key — no positional column order to get 
 
 
 So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_q95`, `shot_0000_betaN`,
-`shot_0001_psirz`, … in test-stream order. The skeleton writes a `manifest.json` alongside (with
-the optional harmonization-layer label — descriptive metadata; it is not scored and gates
-nothing).
+`shot_0001_psirz`, … in test-stream order. The skeleton writes a small `manifest.json` alongside;
+it is descriptive only — the scorer locates your predictions by **filename**, so the two `.npz`
+must keep the exact config names.
 
 - **Align to** `efit_times` — one prediction per target timestamp. Resample your *inputs* to these
 times; never resample/interpolate the target grid itself.
