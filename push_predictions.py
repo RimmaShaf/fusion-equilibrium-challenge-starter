@@ -46,7 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
+import zipfile
 import sys
 from pathlib import Path
 
@@ -223,8 +223,10 @@ def main() -> int:
     manifest = {"repo_id": args.repo, "revision": sha, "token": args.read_token}
     mpath = args.dir / "manifest.json"
     mpath.write_text(json.dumps(manifest, indent=2))
-    args.out.unlink(missing_ok=True)   # zip appends to an existing archive otherwise
-    subprocess.run(["zip", "-j", "-q", str(args.out), str(mpath)], check=True)
+    # zipfile, not a `zip` subprocess: the CLI is absent on plenty of Linux installs and on
+    # essentially every Windows one. "w" truncates, so re-running never appends a stale manifest.
+    with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(mpath, arcname="manifest.json")   # must sit at the archive ROOT
 
     print(f"\nPushed {len(npz)} file(s) at commit {sha}")
     print(f"Verified with the read token, at the repo root: "
