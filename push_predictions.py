@@ -116,6 +116,118 @@ def validate_read_token(api, token: str, repo: str) -> int:
     return 0
 
 
+def push_and_write_pointer(repo: str, read_token: str | None, sub_dir: Path,
+                           out: Path, dry_run: bool = False) -> int:
+    """Upload sub_dir/*.npz to `repo` and write the pointer zip. Returns a process exit code.
+
+    submission_skeleton.py calls this directly so one command can build and submit; keeping it a
+    function rather than duplicating the logic means the token checks cannot drift between the
+    two entry points.
+    """
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    npz = sorted(p for p in sub_dir.glob("*.npz") if p.name in CONFIG_FILENAMES)
+    if not npz:
+        print(f"ERROR: no recognised .npz in {sub_dir.resolve()}.\n"
+              f"       Expected one or more of: {', '.join(CONFIG_FILENAMES)}\n"
+              f"       Build them first: python submission_skeleton.py --out {sub_dir} --max-shots 0",
+              file=sys.stderr)
+        return 1
+
+    total = sum(p.stat().st_size for p in npz)
+    print(f"Found {len(npz)} file(s) in {sub_dir.resolve()}  ({total / 1e6:.0f} MB total):")
+    for p in npz:
+        print(f"    {p.name:28s} {p.stat().st_size / 1e6:8.0f} MB")
+
+    api = HfApi()
+    if read_token:
+        if validate_read_token(api, read_token, repo):
+            return 1
+        print("Read token accepted (fine-grained, read-only).")
+
+    if dry_run:
+        print(f"\n--dry-run: would create {repo} (PRIVATE dataset) and upload the files above.")
+        return 0
+
+    who = api.whoami()
+    print(f"\nLogged in as {who['name']}. Creating/reusing PRIVATE dataset repo {repo}...")
+    try:
+        api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+    except Exception as exc:
+        ns = repo.split("/")[0]
+        hint = ""
+        if "403" in str(exc) or "rights" in str(exc).lower():
+            hint = (f"\n       Your login is '{who['name']}'. If '{ns}' is an organization, you need\n"
+                    f"       write access to it -- or just use your own namespace:\n"
+                    f"           --repo {who['name']}/{repo.split('/')[-1]}")
+        print(f"ERROR: could not create {repo} ({type(exc).__name__}).{hint}\n\n{exc}",
+              file=sys.stderr)
+        return 1
+
+    # A fine-grained token cannot be scoped to a repo that does not exist yet, so the first run
+    # is deliberately two steps: create the repo, then scope a token to it and re-run.
+    if not read_token:
+        print(f"\nCreated {repo}. Now scope a read token to it and re-run:\n"
+              f"\n  1. https://huggingface.co/settings/tokens -> New token -> Fine-grained\n"
+              f"  2. Under 'Repository permissions', select {repo}\n"
+              f"  3. Tick ONLY 'Read access to contents of selected repos'\n"
+              f"  4. re-run with --repo {repo} --read-token hf_...\n"
+              f"\nNothing was uploaded yet. The token is what lets the scorer read your private\n"
+              f"predictions; it goes into manifest.json and is submitted to Codabench.")
+        return 0
+
+    # exist_ok=True does NOT flip an existing public repo to private. Say so loudly rather than
+    # leaving a team to discover their predictions were readable all along.
+    info = api.repo_info(repo, repo_type="dataset")
+    if not getattr(info, "private", True):
+        print(f"\nWARNING: {repo} already existed and is PUBLIC. Your predictions will be\n"
+              f"         visible to other teams. Scoring still works, but consider making it\n"
+              f"         private in the repo settings, or using a fresh --repo name.\n")
+
+    print("Uploading (this is the slow part, but it only happens once per submission)...")
+    commit = api.upload_folder(folder_path=str(sub_dir), repo_id=repo,
+                               repo_type="dataset", allow_patterns=["*.npz"])
+    sha = commit.oid
+    if not (len(sha) == 40 and all(c in "0123456789abcdef" for c in sha.lower())):
+        print(f"ERROR: expected a 40-character commit SHA, got {sha!r}", file=sys.stderr)
+        return 1
+
+    # Verify with the READ token exactly what the scorer will see, before a submission slot is
+    # spent on it. This catches a token scoped to the wrong repo, which is the likely mistake.
+    try:
+        at_rev = api.repo_info(repo, revision=sha, repo_type="dataset", token=read_token)
+    except RepositoryNotFoundError:
+        print(f"ERROR: the upload succeeded, but the READ token cannot see {repo}.\n"
+              f"       Re-scope it to that repo -- otherwise scoring will fail.\n"
+              f"       {TOKEN_HELP}", file=sys.stderr)
+        return 1
+    root = {s.rfilename for s in at_rev.siblings if "/" not in s.rfilename}
+    missing = [p.name for p in npz if p.name not in root]
+    if missing:
+        print(f"ERROR: uploaded, but these are not at the repo ROOT at {sha}: {missing}\n"
+              f"       Files found at root: {sorted(root)}", file=sys.stderr)
+        return 1
+
+    manifest = {"repo_id": repo, "revision": sha, "token": read_token}
+    mpath = sub_dir / "manifest.json"
+    mpath.write_text(json.dumps(manifest, indent=2))
+    # zipfile, not a `zip` subprocess: the CLI is absent on plenty of Linux installs and on
+    # essentially every Windows one. "w" truncates, so re-running never appends a stale manifest.
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(mpath, arcname="manifest.json")   # must sit at the archive ROOT
+
+    print(f"\nPushed {len(npz)} file(s) at commit {sha}")
+    print(f"Verified with the read token, at the repo root: "
+          f"{', '.join(sorted(p.name for p in npz))}")
+    print(f"\n==> Upload this to Codabench:  {out.resolve()}  ({out.stat().st_size} bytes)")
+    print(json.dumps({**manifest, "token": "hf_***redacted***"}, indent=2))
+    print(f"\nThat zip IS the whole submission -- the scorer pulls your predictions from {repo}\n"
+          f"at the pinned commit. {mpath} now holds your read token: it is meant to be submitted,\n"
+          "but do not commit it to a public git repo, and revoke it after the competition.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -129,117 +241,7 @@ def main() -> int:
                     help="pointer zip to upload to Codabench (default: submission_pointer.zip)")
     ap.add_argument("--dry-run", action="store_true", help="check everything, upload nothing")
     args = ap.parse_args()
-
-    from huggingface_hub import HfApi
-    from huggingface_hub.errors import RepositoryNotFoundError
-
-    npz = sorted(p for p in args.dir.glob("*.npz") if p.name in CONFIG_FILENAMES)
-    if not npz:
-        print(f"ERROR: no recognised .npz in {args.dir.resolve()}.\n"
-              f"       Expected one or more of: {', '.join(CONFIG_FILENAMES)}\n"
-              f"       Build them first: python submission_skeleton.py --out {args.dir} --max-shots 0",
-              file=sys.stderr)
-        return 1
-
-    total = sum(p.stat().st_size for p in npz)
-    print(f"Found {len(npz)} file(s) in {args.dir.resolve()}  ({total / 1e6:.0f} MB total):")
-    for p in npz:
-        print(f"    {p.name:28s} {p.stat().st_size / 1e6:8.0f} MB")
-    if total > 3e9:
-        print("\n  NOTE: that is larger than a float16 submission should be (~1.9 GB for both\n"
-              "        machines). If you wrote psirz as float32, rebuild -- float32 roughly\n"
-              "        doubles the size and costs ~0.1% of score.")
-
-    api = HfApi()
-    if args.read_token:
-        if validate_read_token(api, args.read_token, args.repo):
-            return 1
-        print("Read token accepted (fine-grained, read-only).")
-
-    if args.dry_run:
-        print(f"\n--dry-run: would create {args.repo} (PRIVATE dataset) and upload the files above.")
-        return 0
-
-    who = api.whoami()
-    print(f"\nLogged in as {who['name']}. Creating/reusing PRIVATE dataset repo {args.repo}...")
-    try:
-        api.create_repo(args.repo, repo_type="dataset", private=True, exist_ok=True)
-    except Exception as exc:
-        ns = args.repo.split("/")[0]
-        hint = ""
-        if "403" in str(exc) or "rights" in str(exc).lower():
-            hint = (f"\n       Your login is '{who['name']}'. If '{ns}' is an organization, you need\n"
-                    f"       write access to it -- or just use your own namespace:\n"
-                    f"           --repo {who['name']}/{args.repo.split('/')[-1]}")
-        print(f"ERROR: could not create {args.repo} ({type(exc).__name__}).{hint}\n\n{exc}",
-              file=sys.stderr)
-        return 1
-
-    # A fine-grained token cannot be scoped to a repo that does not exist yet, so the first run
-    # is deliberately two steps: create the repo, then scope a token to it and re-run.
-    if not args.read_token:
-        print(f"\nCreated {args.repo}. Now scope a read token to it and re-run:\n"
-              f"\n  1. https://huggingface.co/settings/tokens -> New token -> Fine-grained\n"
-              f"  2. Under 'Repository permissions', select {args.repo}\n"
-              f"  3. Tick ONLY 'Read access to contents of selected repos'\n"
-              f"  4. python {Path(__file__).name} --repo {args.repo} --read-token hf_...\n"
-              f"\nNothing was uploaded yet. The token is what lets the scorer read your private\n"
-              f"predictions; it goes into manifest.json and is submitted to Codabench.")
-        return 0
-
-    # exist_ok=True does NOT flip an existing public repo to private. Say so loudly rather than
-    # leaving a team to discover their predictions were readable all along.
-    info = api.repo_info(args.repo, repo_type="dataset")
-    if not getattr(info, "private", True):
-        print(f"\nWARNING: {args.repo} already existed and is PUBLIC. Your predictions will be\n"
-              f"         visible to other teams. Scoring still works, but consider making it\n"
-              f"         private in the repo settings, or using a fresh --repo name.\n")
-
-    print("Uploading (this is the slow part, but it only happens once per submission)...")
-    commit = api.upload_folder(folder_path=str(args.dir), repo_id=args.repo,
-                               repo_type="dataset", allow_patterns=["*.npz"])
-    sha = commit.oid
-    if not (len(sha) == 40 and all(c in "0123456789abcdef" for c in sha.lower())):
-        print(f"ERROR: expected a 40-character commit SHA, got {sha!r}", file=sys.stderr)
-        return 1
-
-    # Verify with the READ token exactly what the scorer will see, before a submission slot is
-    # spent on it. This catches a token scoped to the wrong repo, which is the likely mistake.
-    try:
-        at_rev = api.repo_info(args.repo, revision=sha, repo_type="dataset",
-                              token=args.read_token)
-    except RepositoryNotFoundError:
-        print(f"ERROR: the upload succeeded, but the READ token cannot see {args.repo}.\n"
-              f"       Re-scope it to that repo -- otherwise scoring will fail.\n"
-              f"       {TOKEN_HELP}", file=sys.stderr)
-        return 1
-    root = {s.rfilename for s in at_rev.siblings if "/" not in s.rfilename}
-    missing = [p.name for p in npz if p.name not in root]
-    if missing:
-        print(f"ERROR: uploaded, but these are not at the repo ROOT at {sha}: {missing}\n"
-              f"       Files found at root: {sorted(root)}", file=sys.stderr)
-        return 1
-
-    manifest = {"repo_id": args.repo, "revision": sha, "token": args.read_token}
-    mpath = args.dir / "manifest.json"
-    mpath.write_text(json.dumps(manifest, indent=2))
-    # zipfile, not a `zip` subprocess: the CLI is absent on plenty of Linux installs and on
-    # essentially every Windows one. "w" truncates, so re-running never appends a stale manifest.
-    with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(mpath, arcname="manifest.json")   # must sit at the archive ROOT
-
-    print(f"\nPushed {len(npz)} file(s) at commit {sha}")
-    print(f"Verified with the read token, at the repo root: "
-          f"{', '.join(sorted(p.name for p in npz))}")
-    print(f"\nWrote {args.out.resolve()} ({args.out.stat().st_size} bytes) containing:")
-    print(json.dumps({**manifest, "token": "hf_***redacted***"}, indent=2))
-    print(f"\nUpload {args.out.name} to Codabench. That is the whole submission -- the scorer\n"
-          f"pulls the predictions from {args.repo} at the pinned commit.")
-    print(f"\nNote that {mpath} now contains your read token. It is meant to be submitted, but do\n"
-          "not commit it to a public git repo, and revoke it after the competition.")
-    print("\nYou can keep pushing new predictions to this same repo; re-run this script and each\n"
-          "submission names the exact commit it was built from.")
-    return 0
+    return push_and_write_pointer(args.repo, args.read_token, args.dir, args.out, args.dry_run)
 
 
 if __name__ == "__main__":

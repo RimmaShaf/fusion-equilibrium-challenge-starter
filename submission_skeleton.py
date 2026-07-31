@@ -25,14 +25,25 @@ f(psi_gt). A perfect flux map scores D_LCFS = 0 and Consistency = 1 by construct
 
 To make a real submission, replace `your_model_predict()` with your trained model. The placeholder
 here emits zeros of the correct shape (a valid-but-useless submission) so you can confirm the
-plumbing/shapes before plugging in a model, then validate with `validate_submission.py`.
+plumbing before plugging in a model.
 
-    uv run python submission_skeleton.py --max-shots 5      # quick demo (few shots)
-    uv run python submission_skeleton.py --max-shots 0      # all shots (full submission)
+This one script does the whole submission: build -> validate -> push to Hugging Face -> write the
+zip you upload to Codabench.
+
+    # quick format check, 5 shots, build only
+    uv run python submission_skeleton.py --max-shots 5
+
+    # the real thing: every shot, pushed, with submission_pointer.zip ready to upload
+    uv run python submission_skeleton.py --max-shots 0 \
+        --repo your-username/fusion-eq-predictions --read-token hf_...
+
+Run it once without --read-token to create the repo; Hugging Face cannot scope a token to a repo
+that does not exist yet. See README -> "How to Submit".
 """
 from __future__ import annotations
 import argparse
-import json
+import os
+import sys
 from pathlib import Path
 import numpy as np
 from datasets import load_dataset
@@ -85,13 +96,11 @@ def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> 
         out = your_model_predict(row, source)
 
         assert out["psirz"].shape == (T, H, W), f"{config} shot {i}: psirz {out['psirz'].shape} != {(T, H, W)}"
-        # float16 for the flux map. It dominates the file: float32 makes a full both-machine
-        # submission ~4.1 GB instead of ~1.9 GB, for a measured cost of ~0.1% of the composite
-        # score (the scorer upcasts to float32 on read). Do NOT instead round to a fixed number
-        # of decimals -- np.round(psi, 3) leaves R2_psi at 0.99997 while destroying ~35% of the
-        # MAST Consistency term. See the Submission format page.
+        # float16 keeps relative precision everywhere and costs ~0.1% of score; the scorer
+        # upcasts on read. Do NOT instead round to a fixed number of decimals -- np.round(psi, 3)
+        # leaves R2_psi at 0.99997 while destroying ~35% of the MAST Consistency term.
         preds[f"shot_{i:04d}_psirz"] = out["psirz"].astype(np.float16)
-        for name in SCALARS:   # the two submitted scalars -- (T,) each, so size is irrelevant
+        for name in SCALARS:
             arr = np.asarray(out[name])
             assert arr.shape == (T,), f"{config} shot {i}: {name} {arr.shape} != ({T},)"
             preds[f"shot_{i:04d}_{name}"] = arr.astype(np.float32)
@@ -108,10 +117,21 @@ def build_submission(config: str, split: str, out_dir: Path, max_shots: int) -> 
     return out_path
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Generate a format-correct submission skeleton")
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Build a submission, validate it, push it to Hugging Face, and write the "
+                    "pointer zip you upload to Codabench.")
     ap.add_argument("--max-shots", type=int, default=5, help="cap shots per config (0 = all)")
     ap.add_argument("--out", type=Path, default=Path("submission"))
+    ap.add_argument("--repo", help="Hugging Face dataset repo to push to, e.g. you/fusion-eq-preds. "
+                                   "Given this, the script also pushes and writes the pointer zip.")
+    ap.add_argument("--read-token", default=os.environ.get("HF_READ_TOKEN"),
+                    help="fine-grained READ token scoped to --repo (or set HF_READ_TOKEN)")
+    ap.add_argument("--zip", dest="zip_out", type=Path, default=Path("submission_pointer.zip"),
+                    help="pointer zip to upload to Codabench (default: submission_pointer.zip)")
+    ap.add_argument("--skip-validate", action="store_true",
+                    help="skip the structure check (not recommended -- it is what catches a "
+                         "malformed .npz before you spend a submission slot)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -120,23 +140,29 @@ def main() -> None:
     for config, split in TEST_CONFIGS:
         written.append(build_submission(config, split, args.out, args.max_shots).name)
 
-    # Descriptive only on the direct-upload route -- the scorer locates your predictions by
-    # FILENAME. On the recommended Hugging Face pointer route this file is what you submit, and
-    # push_predictions.py rewrites it with the {repo_id, revision, token} the scorer reads.
-    manifest = {
-        "scalars": SCALARS,
-        "configs": written,
-    }
-    (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-
+    # No manifest is written here: the scorer locates predictions by FILENAME, and on the
+    # pointer route push_and_write_pointer() writes the real {repo_id, revision, token} one.
     total_mb = sum((args.out / w).stat().st_size for w in written) / 1e6
-    print(f"\nWrote {', '.join(written)} + manifest.json to {args.out.resolve()}  ({total_mb:.0f} MB)")
-    print("Each .npz: per shot, key shot_XXXX_psirz (T,H,W) + one (T,) key per submitted scalar "
-          f"({', '.join(SCALARS)}). Everything else is derived from psirz by the scorer.")
-    print("Next: python validate_submission.py <config>.npz --config <config>")
-    print("Then: python push_predictions.py --repo <you>/fusion-eq-predictions --read-token hf_..."
-          "\n      (recommended route -- see README 'How to Submit')")
+    print(f"\nWrote {', '.join(written)} to {args.out.resolve()}  ({total_mb:.0f} MB)")
+
+    if not args.skip_validate:
+        print("\nValidating structure...")
+        from validate_submission import validate
+        for config, _ in TEST_CONFIGS:
+            if validate(args.out / f"{config}.npz", config, args.max_shots):
+                print(f"\nValidation FAILED for {config}. Fix your_model_predict and rebuild; "
+                      "nothing was pushed.", file=sys.stderr)
+                return 1
+
+    if args.repo:
+        print()
+        from push_predictions import push_and_write_pointer
+        return push_and_write_pointer(args.repo, args.read_token, args.out, args.zip_out)
+
+    print("\nNext: re-run with --repo <you>/fusion-eq-predictions to push and build the zip you\n"
+          "      upload to Codabench. See README -> 'How to Submit'.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
