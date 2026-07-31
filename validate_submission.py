@@ -7,7 +7,7 @@ NOT score (the scorer is held by the organizers and runs on the platform). Catch
 file here saves you a wasted submission slot.
 
 A submission predicts the flux map plus the two scalars that are not derivable from it — q95 and
-betaN (grouped per shot; see README → "Output & Submission Format"). Nothing else is submitted:
+betaN (grouped per shot; see README → "3. What you predict"). Nothing else is submitted:
 the LCFS, R_axis/Z_axis, elongation/triangularity, volume and li are all DERIVED from your
 submitted flux map by the scorer (with the same functionals it applies to the ground truth), so a
 scalar can only be earned by a flux map that implies it. For a config this streams the

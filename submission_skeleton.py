@@ -2,7 +2,7 @@
 """
 Submission skeleton — a runnable, format-correct example of a challenge submission.
 
-This is the executable version of README → "Output & Submission Format". Run it and read the
+This is the executable version of README → "3. What you predict". Run it and read the
 printed shapes to see exactly what a submission looks like — no Git LFS / sample data needed
 (it streams the public test inputs from Hugging Face).
 
@@ -38,7 +38,7 @@ zip you upload to Codabench.
         --repo your-username/fusion-eq-predictions --read-token hf_...
 
 Run it once without --read-token to create the repo; Hugging Face cannot scope a token to a repo
-that does not exist yet. See README -> "How to Submit".
+that does not exist yet. See README -> "5. Build and submit".
 """
 from __future__ import annotations
 import argparse
@@ -160,7 +160,7 @@ def main() -> int:
         return push_and_write_pointer(args.repo, args.read_token, args.out, args.zip_out)
 
     print("\nNext: re-run with --repo <you>/fusion-eq-predictions to push and build the zip you\n"
-          "      upload to Codabench. See README -> 'How to Submit'.")
+          "      upload to Codabench. See README -> '5. Build and submit'.")
     return 0
 
 

@@ -6,117 +6,267 @@ Matthew Waller1, Craig Michoski1, Tapan Ganatma Nakkina1, Brian Sammuli2, Willia
 2. General Atomics
 3. UT Austin
 
-## Getting Started
+## What you are building
 
-This repository is the **public starter kit** for the Fusion Equilibrium Challenge. It gives you:
+Reconstruct a tokamak's **2-D poloidal magnetic flux map** ψ(R,Z) from coil currents and Thomson
+scattering alone — **no magnetic sensors** — on DIII-D, and zero-shot on MAST.
 
-- **Sample parquet shots** (3 DIII-D + 3 MAST) for offline exploration and dFL visualization
-- **Full training data** on Hugging Face: [`Sophelio/fusion-equilibrium-challenge`](https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge)
-- **Baseline models** in `experiments.py` that load from Hugging Face (same data hackathoners use), and can also read a fully **downloaded** copy of the dataset with `--source local`
+You submit ψ plus the only two scalars a flux map cannot contain, `q95` and `betaN`. The plasma
+boundary (LCFS), magnetic axis, shape scalars and `li` are all **derived from your ψ by the
+scorer**, using the same functionals it applies to the true ψ. Getting ψ right is what earns them —
+there is no separate scalar head to tune.
 
-> **What you predict:** the primary target is the 2-D flux map `efit_psirz`; you
-> submit it plus only **`q95` and `betaN`** — the two scalars a flux map cannot contain. The
-> training data still ships all EFIT scalar labels (`efit_beta_n`, `efit_li`, `efit_q95`,
-> `efit_r_axis`, `efit_z_axis`, `magnetics_dsep`) as supervision, and all are **withheld on the
-> test splits** — but at scoring time the axis, shape and `li` are *derived from your
-> submitted flux map* and scored for consistency against the same derivation on the true flux.
-> A good ψ is what earns them.
+One submission enters both challenges:
 
+- **Challenge 1 — intra-machine.** Highest composite score on DIII-D.
+- **Challenge 2 — cross-machine.** Highest `G_ratio = S_MAST / S_DIII-D`. Needs predictions for
+  **both** machines; MAST has **no training data at all**, by design.
 
+The six steps below are the whole workflow, in the order you will do them. Everything after them is
+reference material — physics background, the complete signal dictionary, machine differences — to
+consult when a column name confuses you.
 
-### Get the demo shots (Git LFS)
+---
 
-The six files in `parquet_data/` are tracked with **Git LFS**. If you cloned without LFS
-installed you'll see ~130-byte pointer files instead of real data, and the dFL visualizer
-won't load. Install LFS once, then pull the blobs:
+## 1. Set up
 
 ```bash
-git lfs install
-git lfs pull
+git clone https://github.com/Sophelio/fusion-equilibrium-challenge-starter
+cd fusion-equilibrium-challenge-starter
 ```
 
-The **training/evaluation data on Hugging Face does not need LFS** — only the local demo shots do.
-
-### Environment setup
-
-Pick **uv** (recommended) or **conda/mamba**. Both create a self-contained environment for this repo — no need for a pre-existing Sophelio conda env.
-
-**Option A — uv**
+Pick **uv** (recommended), conda, or pip:
 
 ```bash
-cd fusion-equilibrium-challenge-starter   # or clone this repo
-uv sync                                   # core deps → .venv/
-uv sync --group pytorch                   # add PyTorch for neural-net baselines
-uv run python example_usage.py
-uv run python experiments.py --quick
+uv sync                            # core deps → .venv/
+uv sync --group pytorch            # add PyTorch for the neural-net baselines
 ```
 
-**Option B — conda / mamba**
+<details>
+<summary>conda / pip alternatives</summary>
 
 ```bash
-mamba env create -f environment.yml       # core + PyTorch
+# conda / mamba  (core + PyTorch)
+mamba env create -f environment.yml
 mamba activate fusion-equilibrium-starter
-python example_usage.py
-python experiments.py --quick
-```
 
-**Option C — plain pip**
-
-```bash
+# plain pip
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pip install -r requirements-pytorch.txt   # optional, for neural-net baselines
-python example_usage.py
+pip install -r requirements-pytorch.txt      # optional
 ```
+</details>
 
-Sklearn baselines in `experiments.py` work with the core install only. PyTorch models need the `pytorch` group / `requirements-pytorch.txt`.
-
-### Run the baselines
+**Log in to Hugging Face** with a **write** token from
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). You need this in step 5
+to push your predictions; it stays on your machine and is never submitted.
 
 ```bash
-# Inspect the Hugging Face dataset
-python example_usage.py
-
-# Train baseline models (loads diii_d_train from the Hub)
-python experiments.py --quick
-python experiments.py --n-shots 50 --epochs 50
-
-# Or train from a fully downloaded copy of the dataset (offline; no Hub streaming).
-# Expects the Hub layout: <local-data-dir>/data/<config>/*.parquet
-python experiments.py --source local --n-shots 50
-python experiments.py --source local --local-data-dir /path/to/hf_dataset
+uv run huggingface-cli login
 ```
 
-The baselines predict the flux map **and** regress the EFIT scalar labels: after the flux-map
-models, a Ridge baseline reports per-scalar R² for `efit_beta_n`, `efit_li`, `efit_q95`,
-`efit_r_axis`, `efit_z_axis`, and `magnetics_dsep` (see `results/scalar_r2.png`).
+**Get the demo shots.** The six files in `parquet_data/` are tracked with **Git LFS**. Without it
+you get ~130-byte pointer files instead of data:
 
-> Those six are **supervision, not the scored set.** Only `q95` and `betaN` are submitted and
-> scored as values; the axis, `li` and the shape scalars are *derived from your submitted flux map*
-> at scoring time; and `magnetics_dsep` is not scored at all. The Ridge numbers are a demo of what
-> the inputs support, not a leaderboard preview.
+```bash
+git lfs install && git lfs pull
+```
 
-PyTorch baselines auto-detect the best device (CUDA → MPS → CPU); override with
-`--device cuda|mps|cpu`.
+The training and test data on Hugging Face does **not** need LFS — only these local demo shots do.
 
-See `MODELING_GUIDE.md` for the ML walkthrough.
+---
 
-### Your own experiments → `my_experiments/`
+## 2. Get the data
 
-Keep your custom models, scratch scripts, cached shots, and result images in a
-`my_experiments/` folder at the repo root. It's listed in `.gitignore`, so your work
-stays local and never collides with the starter kit when you `git pull` updates. The starter
-modules are importable from there:
+Everything lives in one Hugging Face dataset:
+[`Sophelio/fusion-equilibrium-challenge`](https://huggingface.co/datasets/Sophelio/fusion-equilibrium-challenge).
+
+| Config | Shots | What it is |
+|---|---|---|
+| `diii_d_train` | 7,041 | DIII-D, inputs **and** targets |
+| `diii_d_public_test` | 874 | DIII-D, **inputs only** — targets withheld |
+| `mast_public_test` | 1,206 | MAST, **inputs only** — targets withheld |
+
+```python
+from datasets import load_dataset
+train = load_dataset("Sophelio/fusion-equilibrium-challenge", "diii_d_train",
+                     split="train", streaming=True)
+row = next(iter(train))
+```
+
+There is deliberately **no `mast_train`** — Challenge 2 is zero-shot transfer. One row is one shot;
+every time series and 2-D map is a nested array inside that row.
+
+```bash
+uv run python example_usage.py          # inspect the dataset
+```
+
+**Inputs** are coil currents (`magnetics_*` — commanded actuators, not field measurements), Thomson
+scattering profiles (`thomson_*`), machine geometry (`coil_*`, `thomson_chord_*`), and `efit_times`.
+**No magnetic-diagnostic array** — that is the point of the challenge. See
+*Complete Signal Dictionary* in the reference below.
+
+---
+
+## 3. What you predict
+
+Per shot, one prediction per `efit_times` timestamp:
+
+| Key | Shape | What |
+|---|---|---|
+| `shot_XXXX_psirz` | `(T, 65, 65)` | flux map ψ(R,Z) — both machines, dense, no NaN region |
+| `shot_XXXX_q95` | `(T,)` | edge safety factor |
+| `shot_XXXX_betaN` | `(T,)` | normalized beta |
+
+`T` = number of `efit_times` for that shot. Shots are numbered in **test-stream order**, 0-indexed.
+That is the entire contract — nothing else is submitted.
+
+- **Align to `efit_times`.** Resample your *inputs* onto those timestamps; never interpolate the
+  target grid itself.
+- **Preserve shot order.** Emit predictions in the order the test split streams rows.
+- **Do not round, truncate, decimate, or drop frames.** `np.round(psi, 3)` looks harmless — it
+  leaves R²ψ at 0.99997 — while destroying ~35% of the MAST Consistency term. The skeleton writes
+  the right dtype for you; just don't post-process ψ.
+
+**How you are scored:**
+
+```
+S = 0.55·R²ψ  +  0.15·R²{q95,βN}  +  0.10·(1 − D_LCFS)  +  0.20·Consistency
+```
+
+| Term | What it measures |
+|---|---|
+| `R²ψ` | Global R² of the flux map over all points × timesteps × shots |
+| `R²{q95,βN}` | Pooled R² of your two submitted scalars |
+| `D_LCFS` | Hausdorff distance between the LCFS contours extracted from your ψ and the true ψ |
+| `Consistency` | Mean agreement of seven ψ-derived scalars: `R_axis, Z_axis, κ, δ_top, δ_bot, V, li` |
+
+A perfect flux map scores `D_LCFS = 0` and `Consistency = 1` by construction — the same code runs
+on both sides. **The flux sign is normalized for you**, so you do not need to guess DIII-D's or
+MAST's convention. Full detail in *How scoring works* below and in `MODELING_GUIDE.md`.
+
+---
+
+## 4. Train a baseline
+
+```bash
+uv run python experiments.py --quick                    # fast sanity run
+uv run python experiments.py --n-shots 50 --epochs 50   # something real
+```
+
+PyTorch baselines auto-detect CUDA → MPS → CPU; override with `--device`. To train from a
+downloaded copy instead of streaming, use `--source local --local-data-dir /path/to/hf_dataset`.
+
+`MODELING_GUIDE.md` is the ML walkthrough — start there for feature engineering, the PCA-on-ψ
+baseline, and normalization advice (input scales span ~10⁴ A coils to ~10⁶ A plasma current).
+
+Keep your own work in **`my_experiments/`** — it is gitignored, so it survives `git pull` and never
+collides with the starter kit. Starter modules import from there:
 
 ```python
 import sys; from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from experiments import load_shot_from_hf_row, interpolate_magnetics_to_efit  # etc.
+from experiments import load_shot_from_hf_row, interpolate_magnetics_to_efit
 ```
 
 ---
 
+## 5. Build and submit
 
+Open `submission_skeleton.py` and replace `your_model_predict()` with your model. Then **one
+command** builds the predictions, validates their structure, pushes them to a private Hugging Face
+repo, and writes the zip you upload to Codabench.
+
+**First time only** — create the repo. Hugging Face cannot scope a token to a repo that does not
+exist yet, so this is a separate step:
+
+```bash
+uv run python submission_skeleton.py --max-shots 5 --repo your-username/fusion-eq-predictions
+```
+
+Use **your own username** as the namespace unless you have write access to an organization. The
+script prints exactly how to make the read token. Do that now:
+
+> [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → **New token** →
+> **Fine-grained** → under *Repository permissions* select your predictions repo → tick **only**
+> "Read access to contents of selected repos".
+
+**Every submission after that** is one command:
+
+```bash
+uv run python submission_skeleton.py --max-shots 0 \
+    --repo your-username/fusion-eq-predictions \
+    --read-token hf_...
+```
+
+`--max-shots 0` means every shot. **The default is 5**, which is a fast format check — a submission
+built without this flag scores almost everything as missing.
+
+It writes **`submission_pointer.zip`**. That file is your entire submission.
+
+**Why a pointer instead of uploading the predictions.** Measured from the scoring machine:
+Codabench's file storage sustains ~0.5 MB/s, the Hugging Face CDN ~50 MB/s. Your predictions go to
+Hugging Face; only a few hundred bytes travel through Codabench, and scoring starts in seconds
+rather than after an hour of transfer. The scoring worker runs one job at a time, so this is queue
+time everyone shares.
+
+**Two tokens, different jobs.** The **write** token (step 1, `huggingface-cli login`) uploads your
+files and never leaves your machine. The **fine-grained read** token goes inside `manifest.json`
+and *is* submitted, so the scorer can read your private repo. The script refuses a write token or a
+classic read token for that slot — both grant far more than the scorer needs. Revoke the read token
+when the competition ends.
+
+Your predictions repo is **private**; nothing you submit is visible to other teams. **Submitting
+predictions you did not produce is plagiarism and disqualifies the whole team** — organizers
+re-score leading entries from source before prizes, and the pinned commit SHA exists so that what
+was scored cannot be changed afterwards.
+
+<details>
+<summary>Running the steps separately, or re-pushing without rebuilding</summary>
+
+A full build streams the entire public test fold, so you will not want to redo it just to re-push:
+
+```bash
+uv run python submission_skeleton.py --max-shots 0            # build only
+uv run python validate_submission.py submission/diii_d_public_test.npz --config diii_d_public_test
+uv run python push_predictions.py --repo you/fusion-eq-predictions --read-token hf_...
+```
+
+There is also a direct-upload fallback that needs no Hugging Face account: zip the two `.npz` at
+the **root** of an archive and upload that instead. It scores identically but spends about an hour
+in transfer and counts against your 15 GB Codabench quota.
+
+```bash
+cd submission && zip -0 -r ../submission.zip .
+```
+</details>
+
+---
+
+## 6. Upload to Codabench
+
+Register at **[codabench.org/competitions/17456](https://www.codabench.org/competitions/17456/)**,
+then **Submit** tab → upload `submission_pointer.zip`.
+
+| | |
+|---|---|
+| **Development phase** | now → **October 18, 2026** — 5 submissions/day, 100 total |
+| **Final phase** | October 19–26, 2026 — 3 submissions total, blind, leaderboard hidden |
+
+Scores appear on the leaderboard, with per-scalar breakdowns and your derivation-failure rate under
+**Detailed Results**. Sort by *Ch1: DIII-D S* for Challenge 1, *Ch2: G_ratio* for Challenge 2. A
+DIII-D-only entry shows `G_ratio = 0`.
+
+By submitting you agree to the competition rules and the dataset terms. Starter-kit code is
+MIT-licensed (`LICENSE`).
+
+---
+---
+
+# Reference
+
+Background, the full signal dictionary, and machine-specific detail. You do not need to read this
+top to bottom — come here when a column name or a convention is unclear.
 
 ## Welcome to the Machine
 
@@ -175,49 +325,43 @@ those as the real targets.
 ---
 
 
+## How scoring works (detail)
 
-## 📁 Data Organization
+**No scalar is masked by boundary type.** Earlier versions restricted the shape scalars to diverted
+frames; the dataset is now diverted-only, so that mask is gone. Six of the seven ψ-derived scalars
+are well-posed on **100%** of frames and `li` on 99.99% (DIII-D) / 99.5% (MAST) — a frame leaves a
+scalar's average only where the *ground-truth* derivation itself fails. If your ψ fails to yield a
+scalar the truth does have, the frame is not skipped: it is mean-substituted and earns ~0.
 
-Record IDs clearly indicate the data source:
+**The flux sign is normalized for you.** DIII-D and MAST store ψ with opposite sign conventions
+(see *Cross-machine convention notes*), so a model that transfers correctly still lands
+sign-inverted. The scorer determines the global sign of your submitted flux map per machine, scores
+you under it, and reports which it used (`psi_sign`: `+1` as submitted, `−1` normalized). It is one
+bit per machine over the whole fold, and only the sign — not the amplitude — is normalized.
 
-- `DIII-D_182494` - DIII-D shot 182494
-- `MAST_25607` - MAST shot 25607
+**Cross-machine (Challenge 2):** `G_ratio = S_MAST / S_DIII-D`, among entries with `R²ψ > 0.6` on
+DIII-D. The two machines are scored separately. The scorer runs on Codabench against held-out
+ground truth; it is not part of this starter kit.
 
-Signal names are prefixed with the source:
+**`validate_submission.py`** checks structure only — no ground truth, no score. It confirms the
+per-shot keys, shot order and count, per-shot `T`, native grid, and dtypes against the streamed
+public-test inputs. `submission_skeleton.py` runs it for you; call it directly with `--max-shots 0`
+for a full check of an existing file.
 
-- `DIII-D: F1A` - DIII-D F1A coil current
-- `MAST: P2L` - MAST P2L coil current
+## The target: `efit/` (the ground truth)
 
-**Training & evaluation data** live on Hugging Face (`diii_d_train`, `diii_d_public_test`, `mast_public_test`). The `parquet_data/` folder here holds six **demo shots only** (3 DIII-D + 3 MAST) for local inspection and the dFL visualizer.
-
----
-
-
-
-## 🎯 The Target: What you are predicting
-
-In physics terms, you are predicting the **Magnetic Equilibrium** — the 2D poloidal flux map
-$\psi(R,Z)$ plus the **two scalars a flux map cannot contain** ($q_{95}$ and $\beta_N$). The
-plasma boundary (**LCFS**), the magnetic axis, the shape scalars and $l_i$ are all scored too,
-but you don't submit any of them — the scorer derives each one from your flux map, the same way
-it derives them from the true flux map. See **Output & Submission
-Format** for exactly what to submit and how it's scored.
-
-### `efit/` (The Ground Truth)
-
-This data comes from a reconstruction code called "EFIT" (equilibrium fitting). 
-
-**Primary target — the flux map:**
+From **EFIT** (equilibrium fitting), the reconstruction code whose output you are learning to
+reproduce without magnetics.
 
 | Key | Shape | Description |
 |-----|-------|-------------|
-| `efit_psirz` | (T, 65, 65) (both machines) | Poloidal flux map - a 2D image at each timestep. Think of it like a topographical map where contour lines show the magnetic cage shape. *Withheld on test.* |
-| `efit_times` | (T,) | Timestamps (ms) for the target images. Align all inputs to these times. |
-| `efit_grid_R` / `efit_grid_Z` | (65,) | Physical R/Z (m) labelling the flux-map columns/rows (both machines). Kept on every split. |
+| `efit_psirz` | (T, 65, 65) both machines | Poloidal flux map — a 2-D image at each timestep, like a topographic map whose contours show the magnetic cage. *Withheld on test.* |
+| `efit_times` | (T,) | Timestamps (ms) for the target images. Align all inputs to these. |
+| `efit_grid_R` / `efit_grid_Z` | (65,) | Physical R/Z (m) labelling the flux-map columns/rows. Kept on every split. |
 
-**EFIT scalar labels** (one value per `efit_times` step; present in `train`, withheld on test).
-You *submit* only `q95` and `betaN`; the rest are training supervision — at
-scoring time the axis, shape and `li` are derived from your submitted flux map:
+**EFIT scalar labels** (one value per `efit_times` step; in `train`, withheld on test). You *submit*
+only `q95` and `betaN`; the rest are training supervision — at scoring time the axis, shape and `li`
+are derived from your submitted flux map:
 
 | Key | Shape | Description |
 |-----|-------|-------------|
@@ -225,184 +369,31 @@ scoring time the axis, shape and `li` are derived from your submitted flux map:
 | `efit_beta_n` | (T,) | Normalised beta β_N — **submitted scalar** |
 | `efit_li` | (T,) | Internal inductance ℓi (supervision; derived from your ψ at scoring) |
 | `efit_r_axis` / `efit_z_axis` | (T,) | Magnetic-axis R/Z (m) (supervision; derived from your ψ at scoring) |
-| `magnetics_dsep` | (T,) | **Context only — not scored.** EFIT-derived despite the `magnetics_` prefix. On DIII-D it is the a-file `DSEP` separatrix↔limiter clearance, `>0` on every shipped frame (its sign defined the diverted filter) and free of NaN. On MAST it is a *different* quantity — divertor balance δR_sep, which straddles zero on ordinary diverted plasmas, so **its sign is not a limited/diverted flag**. |
+| `magnetics_dsep` | (T,) | **Context only — not scored.** EFIT-derived despite the `magnetics_` prefix. On DIII-D it is the a-file `DSEP` separatrix↔limiter clearance, `>0` on every shipped frame and free of NaN. On MAST it is a *different* quantity — divertor balance δR_sep, which straddles zero on ordinary diverted plasmas, so **its sign is not a limited/diverted flag**. |
 | *(bonus, train only)* `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | (T,) / (T, N) | Last-closed-flux-surface boundary contour + valid-point count. Provided as context. |
 
-> **Where you will actually see these.** Every column in this table is EFIT-derived, so all of them
-> are withheld on `diii_d_public_test` and `mast_public_test`. Since there is no `mast_train`
-> either, **MAST's labels appear in no released config at all** — the only MAST shots that carry
-> `efit_psirz`, the scalars or `magnetics_dsep` are the three demo files in `parquet_data/`. Build
-> your pipeline so it does not expect them on MAST.
+> **Where you will actually see these.** Every column above is EFIT-derived, so all are withheld on
+> `diii_d_public_test` and `mast_public_test`. Since there is no `mast_train` either, **MAST's
+> labels appear in no released config at all** — the only MAST shots carrying `efit_psirz`, the
+> scalars or `magnetics_dsep` are the three demo files in `parquet_data/`. Build your pipeline so it
+> does not expect them on MAST.
 
-Reconstructions often include electrical currents present in major conductors such as the vacuum vessel, which for simplicity are omitted here. 
+**The flux map is dense on both machines.** The corrected MAST `_psirz` is a dense 65×65 grid — the
+upstream EFIT stored it on a doubled 65×129 R grid (65 real columns interleaved with 64 empty ones),
+which the dataset collapses to the 65 real columns. Like DIII-D, MAST has **no central-column NaN
+region** to skip. R²ψ is computed only over finite ground-truth pixels, so any occasional
+non-finite frame is handled for you.
 
----
+Reconstructions often include electrical currents in major conductors such as the vacuum vessel,
+which for simplicity are omitted here.
 
+## Data organization
 
+Record IDs indicate the source: `DIII-D_182494`, `MAST_25607`. Signal names are prefixed the same
+way: `DIII-D: F1A`, `MAST: P2L`.
 
-## 📤 Output & Submission Format
-
-You submit **two things** for every shot, at each provided `efit_times` timestamp:
-
-1. **Flux map** `efit_psirz` — the 2D poloidal flux ψ(R,Z) in the machine's native grid.
-2. **Two scalars** — `q95` and `betaN`: the edge safety factor and normalized beta, the only two
-   scalars that are not functions of ψ(R,Z) (they need `F(ψ)` / `p(ψ)`, which a flux map does not
-   contain).
-
-You do **not** submit anything else. The LCFS boundary, magnetic axis, elongation, triangularity,
-volume and `li` are all **derived from your submitted flux map by the scorer**, with the
-same published functionals it applies to the ground-truth flux — so getting ψ right is what earns
-every geometry term, and there is no separate scalar head to tune (or to game).
-
-**Per-shot keys** (variable `T` = number of `efit_times`; grouped per shot in one `.npz` per
-config). Each scalar is its own named key — no positional column order to get wrong:
-
-
-| Key suffix        | Shape             | Notes                                                          |
-| ----------------- | ----------------- | -------------------------------------------------------------- |
-| `_psirz`          | `(T, H, W)` float | Both machines dense `H,W = 65,65` (DIII-D `65,65`; MAST `65,65`) |
-| `_q95` `_betaN`   | `(T,)` float each | the two submitted scalars, one per key                          |
-
-
-So a DIII-D submission `.npz` holds `shot_0000_psirz`, `shot_0000_q95`, `shot_0000_betaN`,
-`shot_0001_psirz`, … in test-stream order. The skeleton writes a small `manifest.json` alongside;
-it is descriptive only — the scorer locates your predictions by **filename**, so the two `.npz`
-must keep the exact config names.
-
-- **Align to** `efit_times` — one prediction per target timestamp. Resample your *inputs* to these
-times; never resample/interpolate the target grid itself.
-- **Preserve shot order** — emit predictions in the same order the test split streams rows.
-
-**Flux map is dense on both machines.** The corrected MAST `_psirz` is a dense 65×65 grid — the
-upstream EFIT stored it on a doubled 65×129 R grid (65 real columns interleaved with 64 empty
-ones), which the dataset collapses to the 65 real columns. So, like DIII-D, MAST has **no
-central-column NaN region** to skip. The scorer's R²_ψ is still computed only over finite
-ground-truth pixels, so any occasional non-finite frame is handled for you.
-
-### How you're scored
-
-The leaderboard score is the **composite intra-machine score** (Award #1):
-
-```
-S_model = 0.55 · R²_ψ  +  0.15 · R²_{q95,βN}  +  0.10 · (1 − D_LCFS)  +  0.20 · Consistency
-```
-
-| Term           | What it measures                                                                              |
-| -------------- | --------------------------------------------------------------------------------------------- |
-| `R²_ψ`         | Global R² of the flux map over all (R,Z) points × timesteps × shots. Clipped to ≥ 0.          |
-| `R²_{q95,βN}`  | Mean pooled R² of the two submitted scalars vs the stored EFIT values. Clipped to ≥ 0.        |
-| `D_LCFS`       | Symmetric Hausdorff distance between the LCFS contours the scorer extracts from your ψ and the true ψ, normalized by mean true LCFS R. Clipped to ≤ 1. |
-| `Consistency`  | Mean agreement of the seven ψ-derived scalars — `R_axis, Z_axis, κ, δ_top, δ_bot, V, li` — computed from your ψ vs the same derivation on the true ψ (pooled R² per scalar, clipped to ≥ 0, averaged). |
-
-**No scalar is masked by boundary type any more.** Earlier versions restricted the shape scalars
-to diverted frames; the dataset is now diverted-only, so that mask is gone. Measured on the
-reference folds, six of the seven scalars are well-posed on **100%** of frames and `li` on 99.99%
-(DIII-D) / 99.5% (MAST) — a frame leaves a scalar's average only where the *ground-truth*
-derivation itself fails. If your ψ fails to yield a scalar the truth does have, the frame is not
-skipped: it is mean-substituted and earns ~0. A perfect flux map scores `D_LCFS = 0` and
-`Consistency = 1` **by construction** — the same code runs on both sides. Per-scalar breakdowns
-and your derivation-failure rate appear in your submission's detailed results.
-
-**The flux sign is normalized for you.** DIII-D and MAST store ψ with opposite sign conventions
-(see *Cross-machine convention notes*), so a model that transfers correctly still lands
-sign-inverted. The scorer determines the global sign of your submitted flux map per machine,
-scores you under it, and reports which it used (`psi_sign`: `+1` as submitted, `−1` normalized).
-It is one bit per machine over the whole fold, and only the sign — not the amplitude — is
-normalized. **You do not need to guess the convention.**
-
-**Cross-machine (Award #2):** `G_ratio = S_model(MAST) / S_model(DIII-D)`, among entries with
-`R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. The scorer runs **on Codabench
-against held-out ground truth** — it is not part of this starter kit. See `MODELING_GUIDE.md →
-Evaluation Metrics`.
-
-**Validate your file before uploading (`validate_submission.py`).** This checks the *structure* of
-your submission (no ground truth, no score) so a malformed `.npz` doesn't burn a submission slot:
-
-```bash
-python validate_submission.py submission/diii_d_public_test.npz --config diii_d_public_test
-python validate_submission.py submission/mast_public_test.npz  --config mast_public_test
-```
-
-It confirms the per-shot keys (`_psirz`, `_q95`, `_betaN`), shot order/count, per-shot `T`,
-native grid, and dtypes against the streamed public-test inputs — the errors that otherwise only
-surface after you submit.
-
-## 📮 How to Submit
-
-Submit on Codabench: **https://www.codabench.org/competitions/17456/** (register first — the
-"Register" button on the competition page).
-
-1. **Generate** predictions in the proposed format: `python submission_skeleton.py --max-shots 0`
-   (after swapping in your model). Produces `submission/diii_d_public_test.npz` and
-   `submission/mast_public_test.npz` — about **1.9 GB** together in `float16`.
-2. **Validate** each file with `validate_submission.py` (above) — a malformed `.npz` is the most
-   common cause of a failed submission.
-3. **Submit** by one of the two routes below. Both score identically; you enter both challenges
-   with one submission — **Challenge 1 (DIII-D)** needs only the DIII-D file; **Challenge 2
-   (cross-machine `G_ratio`)** additionally needs the MAST file.
-4. **Development phase deadline:** **October 18, 2026**. **Submission limits:** **5 per day, 100
-   total** per participant during Development (the blind Final phase, Oct 19–26, allows 3 total).
-
-### Route A — Hugging Face pointer (recommended)
-
-Push the `.npz` to a **private** Hugging Face *dataset* repo and submit a small `manifest.json`
-naming a pinned commit plus a read token scoped to that one repo. Your predictions stay private.
-`push_predictions.py` does all of it:
-
-```bash
-uv run huggingface-cli login                    # once, with a WRITE token — stays on your machine
-
-# First time only: create the repo. Nothing is uploaded; it prints how to scope a token to it.
-uv run python push_predictions.py --repo your-username/fusion-eq-predictions
-
-# Then, and for every submission after: upload and write the pointer.
-uv run python push_predictions.py \
-    --repo your-username/fusion-eq-predictions \
-    --read-token hf_...
-```
-
-The first run is separate because Hugging Face can't scope a token to a repo that doesn't exist
-yet. Use **your own username** as the namespace unless you have write access to an organization.
-
-The second run writes `submission_pointer.zip` — upload **that** on the Submit tab. It verifies with
-the read token that the scorer will actually be able to see your files, before you spend a
-submission slot.
-
-Why this is the default advice, measured from the scoring machine: **Codabench's file storage
-sustains ~0.5 MB/s and the Hugging Face CDN ~50 MB/s.** A 1.9 GB direct upload spends about an
-hour in transfer before scoring starts; the pointer takes under a minute. The scoring worker
-runs one job at a time, so that hour is queue time everyone shares.
-
-**Two tokens, different jobs.** The **write** token uploads your files and never leaves your
-machine (`huggingface-cli login`). The **fine-grained read** token goes inside `manifest.json` and
-is submitted, so the scorer can read your private repo. Create it at
-[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → *New token* →
-**Fine-grained** → select your predictions repo → tick **only** "Read access to contents of
-selected repos". `push_predictions.py` refuses a write token or a classic read token, since both
-grant more than the scorer needs. Revoke it when the competition ends.
-
-**Submitting predictions you did not produce is plagiarism and disqualifies the whole team.** The
-organizers re-score leading entries from source before prizes; the pinned commit SHA exists so
-that what was scored cannot be changed afterwards.
-
-### Route B — direct upload
-
-Zip the two `.npz` at the **root** of the archive and upload it on the **Submit** tab:
-
-```bash
-cd submission && zip -0 -r ../submission.zip .   # -0 = stored; the .npz are already compressed
-```
-
-Nothing external is involved, but expect ~1 h of transfer per submission, and it counts against
-your 15 GB Codabench storage quota (~7 full submissions — delete superseded ones from the
-Resources tab).
-
-By submitting you agree to the official competition rules and the dataset terms (see the dataset
-card on Hugging Face and the Disclaimer below). Starter-kit code is MIT-licensed (`LICENSE`).
-
----
-
-
+Training and evaluation data live on Hugging Face. The `parquet_data/` folder here holds six **demo
+shots only** (3 DIII-D + 3 MAST) for local inspection and the dFL visualizer.
 
 ## 🔌 DIII-D: The Actuators (Magnets)
 
