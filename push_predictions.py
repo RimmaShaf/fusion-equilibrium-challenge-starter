@@ -15,19 +15,28 @@ The scoring worker runs one job at a time, so that hour is queue time everyone s
 
 The repo stays PRIVATE -- your predictions are never visible to other teams.
 
-    uv run python push_predictions.py --repo your-username/fusion-eq-predictions --dry-run
+The FIRST run is two steps, because Hugging Face cannot scope a token to a repo that does not
+exist yet:
+
+    # 1. create the private repo (nothing is uploaded)
     uv run python push_predictions.py --repo your-username/fusion-eq-predictions
+    # 2. scope a read token to it (the script prints how), then upload for real
+    uv run python push_predictions.py --repo your-username/fusion-eq-predictions --read-token hf_...
+
+Every run after that is just step 2.
 
 You need TWO tokens, both from https://huggingface.co/settings/tokens :
 
   1. A WRITE token, to upload. Log in with it once:  uv run huggingface-cli login
-     It never leaves your machine.
+     It never leaves your machine. Note you can only create repos in a namespace you own --
+     use your own username unless you have write access to the organization.
   2. A FINE-GRAINED READ token scoped to your predictions repo ONLY. This one goes into
      manifest.json and is submitted, so the scorer can read your private repo. Pass it with
      --read-token or set HF_READ_TOKEN.
 
      New token -> Fine-grained -> under "Repository permissions" pick your predictions repo
-     -> tick "Read access to contents of selected repos" -> nothing else.
+     -> tick "Read access to contents of selected repos" -> nothing else. Scoping it to your
+     whole username instead works, but hands over read access to all your private repos.
 
 This script REFUSES a write token or a classic read token for #2, because both grant far more
 than the scorer needs and both are stored with your submission. Revoke the read token after the
@@ -84,12 +93,22 @@ def validate_read_token(api, token: str, repo: str) -> int:
                   f"       {TOKEN_HELP}", file=sys.stderr)
             return 1
         names = {(s.get("entity") or {}).get("name") for s in scoped}
-        if repo not in names and repo.split("/")[0] not in names:
+        namespace = repo.split("/")[0]
+        if repo in names:
+            if len(scoped) > 1:
+                print(f"NOTE: the token is scoped to {len(scoped)} entities; just {repo} "
+                      "would be enough.")
+        elif namespace in names:
+            # Scoped to the whole user/org rather than one repo. It works, but it hands the
+            # organizers read access to every private repo in that namespace -- the same
+            # over-reach we reject a classic read token for. Warn, do not block: it is their
+            # call, and failing here would be worse than the over-sharing.
+            print(f"WARNING: the token is scoped to the whole '{namespace}' namespace, so it can\n"
+                  f"         read ALL your private repos there -- not just {repo}. It is stored\n"
+                  f"         with your submission. Consider re-scoping it to {repo} alone.")
+        else:
             print(f"WARNING: the token is scoped to {sorted(n for n in names if n)}, which does not\n"
                   f"         obviously include {repo}. Scoring will fail if it cannot read that repo.")
-        elif len(scoped) > 1:
-            print(f"NOTE: the token is scoped to {len(scoped)} entities; just the predictions repo "
-                  "would be enough.")
         return 0
 
     print(f"NOTE: could not determine the token's scope (role={role!r}). Continuing -- but please\n"
@@ -131,17 +150,11 @@ def main() -> int:
               "        machines). If you wrote psirz as float32, rebuild -- float32 roughly\n"
               "        doubles the size and costs ~0.1% of score.")
 
-    if not args.read_token:
-        print("\nERROR: no read token. Pass --read-token or set HF_READ_TOKEN.\n"
-              "       This is the token the scorer uses to read your PRIVATE predictions repo;\n"
-              "       it is stored in manifest.json and submitted to Codabench.\n"
-              f"       {TOKEN_HELP}", file=sys.stderr)
-        return 1
-
     api = HfApi()
-    if validate_read_token(api, args.read_token, args.repo):
-        return 1
-    print("Read token accepted (fine-grained, read-only).")
+    if args.read_token:
+        if validate_read_token(api, args.read_token, args.repo):
+            return 1
+        print("Read token accepted (fine-grained, read-only).")
 
     if args.dry_run:
         print(f"\n--dry-run: would create {args.repo} (PRIVATE dataset) and upload the files above.")
@@ -149,7 +162,30 @@ def main() -> int:
 
     who = api.whoami()
     print(f"\nLogged in as {who['name']}. Creating/reusing PRIVATE dataset repo {args.repo}...")
-    api.create_repo(args.repo, repo_type="dataset", private=True, exist_ok=True)
+    try:
+        api.create_repo(args.repo, repo_type="dataset", private=True, exist_ok=True)
+    except Exception as exc:
+        ns = args.repo.split("/")[0]
+        hint = ""
+        if "403" in str(exc) or "rights" in str(exc).lower():
+            hint = (f"\n       Your login is '{who['name']}'. If '{ns}' is an organization, you need\n"
+                    f"       write access to it -- or just use your own namespace:\n"
+                    f"           --repo {who['name']}/{args.repo.split('/')[-1]}")
+        print(f"ERROR: could not create {args.repo} ({type(exc).__name__}).{hint}\n\n{exc}",
+              file=sys.stderr)
+        return 1
+
+    # A fine-grained token cannot be scoped to a repo that does not exist yet, so the first run
+    # is deliberately two steps: create the repo, then scope a token to it and re-run.
+    if not args.read_token:
+        print(f"\nCreated {args.repo}. Now scope a read token to it and re-run:\n"
+              f"\n  1. https://huggingface.co/settings/tokens -> New token -> Fine-grained\n"
+              f"  2. Under 'Repository permissions', select {args.repo}\n"
+              f"  3. Tick ONLY 'Read access to contents of selected repos'\n"
+              f"  4. python {Path(__file__).name} --repo {args.repo} --read-token hf_...\n"
+              f"\nNothing was uploaded yet. The token is what lets the scorer read your private\n"
+              f"predictions; it goes into manifest.json and is submitted to Codabench.")
+        return 0
 
     # exist_ok=True does NOT flip an existing public repo to private. Say so loudly rather than
     # leaving a team to discover their predictions were readable all along.
