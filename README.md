@@ -160,6 +160,47 @@ downloaded copy instead of streaming, use `--source local --local-data-dir /path
 `MODELING_GUIDE.md` is the ML walkthrough — start there for feature engineering, the PCA-on-ψ
 baseline, and normalization advice (input scales span ~10⁴ A coils to ~10⁶ A plasma current).
 
+### Score yourself locally
+
+You can compute `R²ψ` yourself easily enough. `D_LCFS` and `Consistency` — **30% of the composite**
+— need contour extraction and the seven ψ-derived functionals, and they are exactly where a
+plausible-looking flux map and a good one come apart. `local_score.py` gives you the whole metric
+on held-out training shots, so you are not spending submission slots to find out:
+
+```bash
+uv run python local_score.py --n-shots 20 --skip 7000     # shots your model did not train on
+```
+
+```
+==============================================================
+  COMPOSITE S = 0.8143      (20 held-out DIII-D shots)
+==============================================================
+            R2_psi    0.9312   x 0.55  =  0.5122
+    R2_{q95,betaN}    0.7458   x 0.15  =  0.1119
+        1 - D_LCFS    0.8821   x 0.10  =  0.0882
+       Consistency    0.5103   x 0.20  =  0.1021
+```
+
+plus a per-scalar `R²` breakdown for the Consistency term, so you can see *which* derived quantity
+your ψ is getting wrong.
+
+`fusion_scoring/` holds the competition scorer's own modules, copied unmodified — the functionals
+are the same code Codabench runs, not a reimplementation. What differs is the data: this scores
+training shots you hold out, the leaderboard scores withheld test shots. **Treat it as a faithful
+proxy for model selection, not a leaderboard prediction.**
+
+Verify the harness itself any time:
+
+```bash
+uv run python local_score.py --mode perfect --n-shots 2    # S = 1.0 exactly
+uv run python local_score.py --mode zeros   --n-shots 2    # S = 0.0
+```
+
+By default it calls `your_model_predict` from `submission_skeleton.py` — the same function that
+builds your real submission. ⚠️ Training rows **do** contain the `efit_*` ground truth: if your
+model reads those, the score is meaningless. Use only the inputs listed in that function's
+docstring. Use `--pred my_preds.npz` to score a file you built another way.
+
 Keep your own work in **`my_experiments/`** — it is gitignored, so it survives `git pull` and never
 collides with the starter kit. Starter modules import from there:
 
