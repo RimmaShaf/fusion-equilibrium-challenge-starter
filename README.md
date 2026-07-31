@@ -202,6 +202,10 @@ uv run python submission_skeleton.py --max-shots 0 \
 `--max-shots 0` means every shot. **The default is 5**, which is a fast format check — a submission
 built without this flag scores almost everything as missing.
 
+A full run takes a while and is not stuck: it streams the public test fold once to build, again to
+validate the structure, and only then uploads. Pass `--skip-validate` to drop the second pass, but
+the structure check is what catches a malformed `.npz` before it costs you a submission slot.
+
 It writes **`submission_pointer.zip`**. That file is your entire submission.
 
 **Why a pointer instead of uploading the predictions.** Measured from the scoring machine:
