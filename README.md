@@ -1,6 +1,6 @@
 # ⚛️ The Fusion Equilibrium Challenge: A Hacker's Guide
 
-Matthew Waller1, Craig Michoski1, Tapan Ganatma Nakkina1, Brian Sammuli2, William Boyes2, Mitchell Clark2, Sterling Smith2, Raffi Nazikian2
+Matthew Waller, Craig Michoski, Tapan Ganatma Nakkina, Brian Sammuli, William Boyes, Mitchell Clark, Sterling Smith, Raffi Nazikian
 
 1. Sophelio  
 2. General Atomics
