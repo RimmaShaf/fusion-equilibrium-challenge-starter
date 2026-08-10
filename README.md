@@ -4,7 +4,7 @@ Matthew Waller1, Craig Michoski1, Tapan Ganatma Nakkina1, Brian Sammuli2, Willia
 
 1. Sophelio  
 2. General Atomics
-3. UT Austin
+3. UT Austin (IFS)
 
 ## What you are building
 
