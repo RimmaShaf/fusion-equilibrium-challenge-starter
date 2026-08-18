@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from common import (CONS_SCALARS, N_CONS, N_SCALARS, PSI_SIGNS, SCALARS,
-                    W_CONS, W_LCFS, W_PSI, W_QB)
+from common import (CH2_GATE_D3D_S, CONS_SCALARS, N_CONS, N_SCALARS,
+                    PSI_SIGNS, SCALARS, W_CONS, W_LCFS, W_PSI, W_QB)
 
 
 def ss_tot(sum_: float, sumsq: float, n: float) -> float:
@@ -152,5 +152,7 @@ def finalize_machine(acc: Accum, ref_stats: dict) -> dict:
 
 
 def g_ratio(s_mast: float, s_d3d: float) -> float:
-    """Award-2 cross-machine generalization ratio S_MAST / S_D3D (0 if DIII-D unscored)."""
-    return round(s_mast / s_d3d, 6) if s_d3d > 0 else 0.0
+    """Award-2 cross-machine ratio S_MAST / S_D3D; 0 unless DIII-D S clears CH2_GATE_D3D_S."""
+    if s_d3d < CH2_GATE_D3D_S:
+        return 0.0
+    return round(s_mast / s_d3d, 6)

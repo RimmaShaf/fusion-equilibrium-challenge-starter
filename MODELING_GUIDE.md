@@ -324,7 +324,8 @@ S_model = 0.55 · R²_ψ  +  0.15 · R²_{q95,βN}  +  0.10 · (1 − D_LCFS)  +
 | **Consistency** | Mean agreement of the seven ψ-derived scalars (`R_axis, Z_axis, κ, δ_top, δ_bot, V, li`): each is computed from *your* ψ and scored against the same computation on the *true* ψ (pooled R², clipped ≥ 0, averaged). You don't submit any of them — your flux map has to imply them. | → 1 |
 
 Cross-machine transfer (Award #2) is `G_ratio = S_model(MAST) / S_model(DIII-D)` among entries with
-`R²_ψ > 0.6` on DIII-D. DIII-D and MAST are scored separately. **R² can be negative** before
+a DIII-D composite `S_model ≥ 0.85` (raised 2026-08-18 from `R²_ψ > 0.6`, see issue #7; the scorer
+enforces the gate — below it `G_ratio` is reported as 0). DIII-D and MAST are scored separately. **R² can be negative** before
 clipping — that means the model is worse than predicting the mean, and it scores 0 in the composite.
 
 **Practical consequence of the Consistency term:** a scalar regression head can no longer earn

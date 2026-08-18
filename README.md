@@ -19,8 +19,9 @@ there is no separate scalar head to tune.
 One submission enters both challenges:
 
 - **Challenge 1 — intra-machine.** Highest composite score on DIII-D.
-- **Challenge 2 — cross-machine.** Highest `G_ratio = S_MAST / S_DIII-D`. Needs predictions for
-  **both** machines; MAST has **no training data at all**, by design.
+- **Challenge 2 — cross-machine.** Highest `G_ratio = S_MAST / S_DIII-D`, among entries with a
+  DIII-D composite `S ≥ 0.85`. Needs predictions for **both** machines; MAST has **no training
+  data at all**, by design.
 
 The six steps below are the whole workflow, in the order you will do them. Everything after them is
 reference material — physics background, the complete signal dictionary, machine differences — to
@@ -351,7 +352,8 @@ z=zipfile.ZipFile('submission.zip','w'); \
 
 The leaderboard has one column per challenge — sort by **Ch1: DIII-D S** or **Ch2: G_ratio**. One
 submission enters both: Challenge 1 needs only the DIII-D file, Challenge 2 needs both machines, so
-a DIII-D-only entry shows `G_ratio = 0`.
+a DIII-D-only entry shows `G_ratio = 0`. The Challenge-2 eligibility gate is enforced in that
+column too: an entry with DIII-D `S < 0.85` also shows `G_ratio = 0`.
 
 | | when | how many |
 |---|---|---|
@@ -440,8 +442,10 @@ sign-inverted. The scorer determines the global sign of your submitted flux map 
 you under it, and reports which it used (`psi_sign`: `+1` as submitted, `−1` normalized). It is one
 bit per machine over the whole fold, and only the sign — not the amplitude — is normalized.
 
-**Cross-machine (Challenge 2):** `G_ratio = S_MAST / S_DIII-D`, among entries with `R²ψ > 0.6` on
-DIII-D. The two machines are scored separately. The scorer runs on Codabench against held-out
+**Cross-machine (Challenge 2):** `G_ratio = S_MAST / S_DIII-D`, among entries with a composite
+`S ≥ 0.85` on DIII-D (raised 2026-08-18 from `R²ψ > 0.6` — see
+[issue #7](https://github.com/Sophelio/fusion-equilibrium-challenge-starter/issues/7); the scorer
+enforces the gate, reporting `G_ratio = 0` below it). The two machines are scored separately. The scorer runs on Codabench against held-out
 ground truth; it is not part of this starter kit.
 
 **`validate_submission.py`** checks structure only — no ground truth, no score. It confirms the

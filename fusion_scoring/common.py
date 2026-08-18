@@ -56,6 +56,13 @@ GRID_SHAPE = (65, 65)
 # rest (D_LCFS and the shape part of Consistency deliberately overlap -- keep W_LCFS modest).
 W_PSI, W_QB, W_LCFS, W_CONS = 0.55, 0.15, 0.10, 0.20
 
+# Challenge-2 admissibility gate, on the full DIII-D composite (starter issue #7). The old
+# prose-only "R2_psi > 0.6" gate bounded just the W_PSI term, leaving ~45% of the denominator
+# free -- sandbagging DIII-D to the floor bought a ~3x G_ratio inflation. Gating the composite
+# bounds the whole denominator (cap < 1.2x) and implies R2_psi >= 0.727. Enforced in
+# metrics.g_ratio, so ineligible entries show g_ratio = 0 on the leaderboard.
+CH2_GATE_D3D_S = 0.85
+
 # The test configs, and their machine tag as stored in the parquet `source` column.
 CONFIG_MACHINE = {
     "diii_d_public_test": "DIII-D",
@@ -87,4 +94,4 @@ OUTPUT_DIR = "/app/output"
 # Ground-truth reference bundles are resolved in this order (first that exists wins):
 REF_SEARCH_PATHS = ["/app/input/ref", "/opt/fusion_ref"]
 
-SCORING_VERSION = "3.1.0"
+SCORING_VERSION = "3.2.0"
