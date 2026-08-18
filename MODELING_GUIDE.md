@@ -132,6 +132,12 @@ It's like having a security camera that records at 30fps and a thermometer that 
 
 **Interpolate inputs to target times.** For each of the ~300 flux map timestamps, estimate what each magnet current was at that exact moment. This is the simplest approach -- draw a smooth line through the magnet data points and read off the value at the time you need. This way, the target (flux maps) is never modified -- only the inputs are resampled.
 
+> **⚠️ One data erratum matters exactly here:** on ~69% of DIII-D shots the shipped
+> `magnetics_plasma_current_times` axis is wrong (the Ip *values* are fine), so interpolating Ip
+> onto `efit_times` with it returns pre-plasma noise instead of ~1 MA. Use
+> `data_fixes.fix_d3d_ip_times(row)` to get the corrected per-shot axis — see the README's
+> *Data errata* section. The baseline in `experiments.py` already applies it.
+
 **Important: you should NOT interpolate the targets.** The flux maps are the ground truth. Modifying them (e.g., resampling to a different time grid) would introduce artifacts into the labels your model is learning from.
 
 **Use the raw time series as input.** Instead of collapsing each magnet to a single value per timestep, you could feed a model a window of the raw high-frequency magnet data (e.g., the last 100ms of all 21 signals). This gives the model more information but requires sequence-aware architectures (RNNs, Transformers, 1D CNNs).

@@ -58,6 +58,8 @@ from sklearn.linear_model import LinearRegression, RidgeCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
+
+from data_fixes import fix_d3d_ip_times
 from datasets import load_dataset
 
 try:
@@ -155,7 +157,9 @@ def load_shot_from_hf_row(row: dict) -> dict:
     shot["efit_psirz"] = _as_psirz_stack(row["efit_psirz"])
 
     shared_mag_time = np.asarray(row["magnetics_time"], dtype=np.float64)
-    ip_times = np.asarray(row["magnetics_plasma_current_times"], dtype=np.float64)
+    # v1.1.0 erratum: the shipped Ip time axis is wrong on ~69% of DIII-D
+    # shots (issue #6) -- see data_fixes.py and the README's Data errata.
+    ip_times = fix_d3d_ip_times(row)
 
     magnetics = {}
     for sig in D3D_MAGNETICS_SIGNALS:

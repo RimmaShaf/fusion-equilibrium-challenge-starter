@@ -106,6 +106,44 @@ scattering profiles (`thomson_*`), machine geometry (`coil_*`, `thomson_chord_*`
 **No magnetic-diagnostic array** — that is the point of the challenge. See
 *Complete Signal Dictionary* in the reference below.
 
+### Data errata (v1.1.0)
+
+Two participant-reported issues in the released data, both with drop-in fixes in
+[`data_fixes.py`](data_fixes.py). They affect **input columns only** — the targets, `efit_times`,
+and all scoring are unaffected, and everyone has the same data. A corrected v1.1.1 dataset release
+will follow and will match these fixes exactly, so nothing you build on them is throwaway.
+
+**1 · DIII-D `magnetics_plasma_current_times` is wrong on ~69% of shots**
+([#6](https://github.com/Sophelio/fusion-equilibrium-challenge-starter/issues/6)). Every DIII-D
+file shipped with the *same* Ip time axis. It is genuinely correct for ~31% of shots, but on the
+rest (4,930 of 7,041 `diii_d_train` shots; 586 of 874 `diii_d_public_test`) the Ip trace actually
+starts at `magnetics_time[0]` — about 3 s earlier — so interpolating Ip onto `efit_times` with
+the shipped axis reads the pre-plasma noise floor (~2 kA) instead of the real current (~1 MA).
+The Ip **values** are correct on every shot; only the timestamps need fixing. MAST is unaffected.
+
+```python
+from data_fixes import fix_d3d_ip_times
+
+ip_times = fix_d3d_ip_times(row)   # per-shot corrected axis; works on train and test alike
+ip_at_efit = np.interp(row["efit_times"], ip_times, row["magnetics_plasma_current"])
+```
+
+The helper decides per shot (breakdown must land near t = 0, the DIII-D time convention) and has
+been validated to make the correct, unambiguous call on all 9,113 DIII-D source shots. Do **not**
+blanket-shift every shot — ~31% ship with the correct axis, and shifting those would corrupt them.
+The baseline in `experiments.py` already applies the fix.
+
+**2 · MAST `thomson_core_R` has 130 entries but `thomson_core_Te`/`ne` have 131 channels**
+([#5](https://github.com/Sophelio/fusion-equilibrium-challenge-starter/issues/5)). Channel 0 has
+no radius calibration and is NaN in every shot; alignment is `R[j] ↔ Te[t][j+1]`. Drop data
+channel 0:
+
+```python
+from data_fixes import align_mast_thomson_core
+
+R, Te, ne = align_mast_thomson_core(row)   # (130,), (T, 130), (T, 130) — aligned
+```
+
 ---
 
 ## 3. What you predict
@@ -550,7 +588,7 @@ Vertical view, named core for purely historical reasons.
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `thomson_core_Te`    | Electron temperature (eV), one profile per timestep                                                                                                              |
 | `thomson_core_ne`    | Electron density (m⁻³)                                                                                                                                           |
-| `thomson_core_R`     | Channel radial position(s) (m). **DIII-D:** constant ≈ 1.94 (vertical chord — channels vary in Z, which is not provided). **MAST:** per-channel R (≈ 0.25–1.5 m) |
+| `thomson_core_R`     | Channel radial position(s) (m). **DIII-D:** constant ≈ 1.94 (vertical chord — channels vary in Z, which is not provided). **MAST:** per-channel R (≈ 0.25–1.5 m). ⚠️ On MAST this has 130 entries vs 131 Te/ne channels — see [Data errata](#data-errata-v110) |
 | `thomson_core_times` | Timestamps (ms)                                                                                                                                                  |
 
 
@@ -669,12 +707,12 @@ scalar (`dsep`, the x-point gap; see "Equilibrium-Derived Quantities").
 | EFIT boundary | `efit_lcfs_n`, `efit_lcfs_r`, `efit_lcfs_z` | `(T,)` / `(T, N)` | LCFS contour + valid-point count. Bonus context in `train`. *Withheld on test.* |
 | **Magnetics time bases** | | | |
 | — | `magnetics_time` | `(M,)` float32 | ms; shared by every DIII-D magnetics signal. **M varies by shot**: 70.0% of train shots (67.0% of public test) are `(480256,)` at ~20 kHz, the rest mostly `(49152,)` or `(50176,)` at 2 kHz. Six distinct lengths occur in all. Both rates span the full ~24 s record — do not hard-code the length. |
-| — | `magnetics_plasma_current_times` | `(30719,)` float32 | ms; Ip is on its own ADC at a different sample rate |
+| — | `magnetics_plasma_current_times` | `(30719,)` float32 | ms; Ip is on its own ADC at a different sample rate. **⚠️ Wrong on ~69% of shots as shipped — use `data_fixes.fix_d3d_ip_times`; see [Data errata](#data-errata-v110)** |
 | — | `magnetics_dsep_times` | `(T,)` float32 | ms; identical to `efit_times` since dsep is EFIT-derived |
 | **Main coils** | | | |
 | `DIII-D: ECOILA` | `magnetics_ECOILA` | `(M,)` float64 | Ohmic / central solenoid — **kA** (not kA·turn; turn convention unresolved). Uses `magnetics_time`. |
 | `DIII-D: bcoil` | `magnetics_bcoil` | `(M,)` float64 | Toroidal field — **kA** (toroidal coil: no PF turn count). Uses `magnetics_time`. |
-| `DIII-D: Ip` | `magnetics_plasma_current` | `(30719,)` float32 | Plasma current — **kA** (matches MAST). Uses `magnetics_plasma_current_times`. |
+| `DIII-D: Ip` | `magnetics_plasma_current` | `(30719,)` float32 | Plasma current — **kA** (matches MAST). Uses `magnetics_plasma_current_times` (**⚠️ see [Data errata](#data-errata-v110)**). |
 | **Shaping coils (18)** | | | |
 | `DIII-D: F1A`–`F9B` | `magnetics_F{1-9}{A,B}` | `(M,)` float64 each | Upper (A) / lower (B) shaping coils — **kA·turn** (58 or 55 turns folded in). All use `magnetics_time`. |
 | **EFIT-derived (target)** | | | |
@@ -740,9 +778,9 @@ scalars) are not distributed. The three MAST demo shots in `parquet_data/` do in
 | `MAST: dsep` | `magnetics_dsep` (+ `_times`) | `(T,)` float32 | **δR_sep — divertor *balance*, NOT the same quantity as DIII-D's `dsep`.** From `esm/dr_sep_out`: the radial gap between the upper and lower separatrices at the outboard midplane, so it straddles zero on ordinary diverted plasmas and **its sign is not a limited/diverted flag**. Not scored, and — like every EFIT-derived MAST column — present only in the `parquet_data/` demo shots, never in a released config. |
 | **Thomson core** | | | |
 | — | `thomson_core_times` | `(~50–112,)` float64 | ms |
-| — | `thomson_core_Te` | `(~T_c,)` of `(~130,)` | Electron temperature (eV) |
-| — | `thomson_core_ne` | `(~T_c,)` of `(~130,)` | Electron density (m⁻³) |
-| — | `thomson_core_R` | `(~130,)` float64 | Radial positions (m) of each core channel |
+| — | `thomson_core_Te` | `(T_c,)` of `(131,)` | Electron temperature (eV) |
+| — | `thomson_core_ne` | `(T_c,)` of `(131,)` | Electron density (m⁻³) |
+| — | `thomson_core_R` | `(130,)` float64 | Radial positions (m) of each core channel. **⚠️ 130 coordinates vs 131 Te/ne channels — data channel 0 has no coordinate and is NaN everywhere; use `data_fixes.align_mast_thomson_core`; see [Data errata](#data-errata-v110)** |
 | **Thomson edge** | | | |
 | — | `thomson_edge_times` | `(~50–112,)` float64 | ms |
 | — | `thomson_edge_Te` | `(~T_e,)` of `(~16,)` | Electron temperature (eV) |
@@ -779,7 +817,7 @@ scalars) are not distributed. The three MAST demo shots in `parquet_data/` do in
   **P6 = 4**. A naive "×1000" therefore fixes Ip/TF/solenoid/EFPS but leaves every P-coil wrong
   by 8–23×. Normalizing per machine (recommended) absorbs all of it.
 - **Time units are ms everywhere**, including MAST (`magnetics_time`, `efit_times`, `magnetics_dsep_times`). MAST upstream stores some signals in seconds; the conversion is applied at parquet build time so participants don't have to think about it.
-- **Magnetics time base is shared per machine**: both DIII-D and MAST expose one `magnetics_time` array used by every coil signal at the primary sampling rate. On DIII-D, `magnetics_plasma_current` (Ip) sits on its own ADC at a different rate and therefore has its own `magnetics_plasma_current_times` companion. On MAST, 114 early-campaign shots use a two-grid union base with per-column nulls — see the MAST magnetics note above.
+- **Magnetics time base is shared per machine**: both DIII-D and MAST expose one `magnetics_time` array used by every coil signal at the primary sampling rate. On DIII-D, `magnetics_plasma_current` (Ip) sits on its own ADC at a different rate and therefore has its own `magnetics_plasma_current_times` companion — **⚠️ which shipped wrong on ~69% of shots; use `data_fixes.fix_d3d_ip_times` (see [Data errata](#data-errata-v110))**. On MAST, 114 early-campaign shots use a two-grid union base with per-column nulls — see the MAST magnetics note above.
 - `dsep` **is on the EFIT time base**: `magnetics_dsep_times` is identical to `efit_times` on every shot for both machines. It's grouped under `magnetics_`* only for column-naming consistency; physically it's an EFIT-derived geometric quantity, not a magnetic measurement.
 - `magnetics_time` **spans cover the full DAQ window** (pre-shot baseline through post-shot ringdown), so they extend well beyond the plasma's actual lifetime. The plasma window is bounded by `efit_times`.
 
@@ -799,6 +837,7 @@ fusion-equilibrium-challenge-starter/
 │   ├── mast_shot_28350.parquet
 │   └── mast_shot_28351.parquet
 ├── fusion_data_provider.py        # dFL data provider (reads parquet_data/)
+├── data_fixes.py                  # Drop-in fixes for the v1.1.0 data errata (Ip time axis, MAST Thomson alignment)
 ├── MODELING_GUIDE.md              # ML walkthrough
 ├── example_usage.py               # Load the Hugging Face dataset
 ├── experiments.py
